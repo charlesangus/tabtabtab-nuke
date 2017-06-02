@@ -21,6 +21,13 @@ except ImportError:
     from PyQt4.QtCore import Qt
     QtCore.Signal = QtCore.pyqtSignal
 
+try:
+    import nuke
+except ImportError:
+    IN_NUKE = False
+else:
+    IN_NUKE = True
+
 
 def find_menu_items(menu, _path = None):
     """Extracts items from a given Nuke menu
@@ -34,8 +41,6 @@ def find_menu_items(menu, _path = None):
     >>> found[:5]
     ['3D/Axis', '3D/Camera', '3D/CameraTracker', '3D/DepthGenerator', '3D/Geometry/Card']
     """
-    import nuke
-
     found = []
 
     mi = menu.items()
@@ -380,7 +385,6 @@ class TabTabTabWidget(QtGui.QDialog):
         self.weights = NodeWeights(os.path.expanduser("~/.nuke/tabtabtab_weights.json"))
         self.weights.load() # weights.save() called in close method
 
-        import nuke
         nodes = find_menu_items(nuke.menu("Nodes")) + find_menu_items(nuke.menu("Nuke"))
 
         # List of stuff, and associated model
@@ -559,13 +563,24 @@ def main():
     _tabtabtab_instance = weakref.proxy(t)
 
 
-if __name__ == '__main__':
-    try:
-        import nuke
-        m_edit = nuke.menu("Nuke").findItem("Edit")
-        m_edit.addCommand("Tabtabtab", main, "Tab")
-    except ImportError:
-        # For testing outside Nuke
-        app = QtGui.QApplication(sys.argv)
-        main()
-        app.exec_()
+if IN_NUKE:
+    if nuke.NUKE_VERSION_MAJOR >= 9:
+        _getParentMenu = lambda: nuke.menu("Node Graph")
+    else:
+        _getParentMenu = lambda: nuke.menu("Nuke").findItem("Edit")
+
+
+    def registerNukeAction():
+        menu = _getParentMenu()
+        if menu.findItem("Tabtabtab") is None:
+            return menu.addCommand("Tabtabtab", main, "Tab")
+
+
+    def unregisterNukeAction():
+        return _getParentMenu().removeItem("Tabtabtab")
+
+
+if __name__ == '__main__' and not IN_NUKE:
+    app = QtGui.QApplication(sys.argv)
+    main()
+    app.exec_()
