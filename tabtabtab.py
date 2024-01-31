@@ -4,7 +4,7 @@ homepage: https://github.com/dbr/tabtabtab-nuke
 license: http://unlicense.org/
 """
 
-__version__ = "1.8"
+__version__ = "2.0"
 
 import os
 import sys
@@ -47,7 +47,7 @@ def find_menu_items(menu, _path = None):
     """
     found = []
 
-    mi = menu.items()
+    mi = list(menu.items())
     for i in mi:
         if isinstance(i, nuke.Menu):
             # Sub-menu, recurse
@@ -187,7 +187,7 @@ class NodeWeights(object):
         def _load_internal():
             import json
             if not os.path.isfile(self.fname):
-                print "Weight file does not exist"
+                print("Weight file does not exist")
                 return
             f = open(self.fname)
             self._weights = json.load(f)
@@ -198,20 +198,20 @@ class NodeWeights(object):
             _load_internal()
             self._successful_load = True
         except Exception:
-            print "Error loading node weights"
+            print("Error loading node weights.")
             import traceback
             traceback.print_exc()
             self._successful_load = False
 
     def save(self):
         if self.fname is None:
-            print "Not saving node weights, no file specified"
+            print("Not saving node weights, no file specified")
             return
 
         if not self._successful_load:
             # Avoid clobbering existing weights file on load error
-            print "Not writing weights file because %r previously failed to load" % (
-                self.fname)
+            print(("Not writing weights file because %r previously failed to load" % (
+                self.fname)))
             return
 
         def _save_internal():
@@ -220,7 +220,7 @@ class NodeWeights(object):
             if not os.path.isdir(ndir):
                 try:
                     os.makedirs(ndir)
-                except OSError, e:
+                except OSError as e:
                     if e.errno != 17: # errno 17 is "already exists"
                         raise
 
@@ -233,12 +233,12 @@ class NodeWeights(object):
         try:
             _save_internal()
         except Exception:
-            print "Error saving node weights"
+            print("Error saving node weights")
             import traceback
             traceback.print_exc()
 
     def get(self, k, default = 0):
-        if len(self._weights.values()) == 0:
+        if len(list(self._weights.values())) == 0:
             maxval = 1.0
         else:
             maxval = max(self._weights.values())
@@ -598,7 +598,7 @@ def main():
         try:
             thing['menuobj'].invoke()
         except ImportError:
-            print "Error creating %s" % thing
+            print("Error creating %s" % thing)
 
     t = TabTabTabWidget(on_create = on_create, winflags = Qt.FramelessWindowHint)
 
