@@ -10,20 +10,12 @@ import os
 import sys
 
 try:
+    from PySide6 import QtCore, QtGui, QtWidgets
+    from PySide6.QtCore import Qt
+except ImportError:
     from PySide2 import QtCore, QtGui, QtWidgets
     from PySide2.QtCore import Qt
-except ImportError:
-    try:
-        from PySide import QtCore, QtGui, QtGui as QtWidgets
-        from PySide.QtCore import Qt
-    except ImportError:
-        import sip
-        for mod in ("QDate", "QDateTime", "QString", "QTextStream", "QTime", "QUrl", "QVariant"):
-            sip.setapi(mod, 2)
 
-        from PyQt4 import QtCore, QtGui
-        from PyQt4.QtCore import Qt
-        QtCore.Signal = QtCore.pyqtSignal
 
 try:
     import nuke
@@ -477,7 +469,7 @@ class TabTabTabWidget(QtWidgets.QDialog):
 
         # Get cursor position, and screen dimensions on active screen
         cursor = QtGui.QCursor().pos()
-        screen = QtWidgets.QDesktopWidget().screenGeometry(cursor)
+        screen = self.screen().geometry()
 
         # Get window position so cursor is just over text input
         xpos = cursor.x() - (self.width()/2)
