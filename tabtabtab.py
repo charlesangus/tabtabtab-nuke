@@ -1,4 +1,4 @@
-"""Alternative "tab node creator thingy" for The Foundry's Nuke
+"""tabtabtab — app-agnostic command palette core
 
 homepage: https://github.com/dbr/tabtabtab-nuke
 license: http://unlicense.org/
@@ -7,7 +7,7 @@ license: http://unlicense.org/
 __version__ = "2.0"
 
 import os
-import sys
+import re
 
 try:
     from PySide6 import QtCore, QtGui, QtWidgets
@@ -17,56 +17,94 @@ except ImportError:
     from PySide2.QtCore import Qt
 
 
-try:
-    import nuke
-except ImportError:
-    IN_NUKE = False
-else:
-    IN_NUKE = True
+class TabTabTabPlugin:
+    def get_items(self):
+        """Return list of {'menuobj': ..., 'menupath': str} dicts."""
+        raise NotImplementedError
+
+    def get_weights_file(self):
+        """Return path to JSON weights file, or None to skip persistence."""
+        raise NotImplementedError
+
+    def invoke(self, thing):
+        """Trigger the selected menu item."""
+        raise NotImplementedError
+
+    def get_icon(self, menuobj):
+        """Return a QIcon for menuobj, or None.
+        Default works for any Qt object whose .icon() returns a QIcon."""
+        try:
+            icon = menuobj.icon()
+            if isinstance(icon, QtGui.QIcon) and not icon.isNull():
+                return icon
+        except Exception:
+            pass
+        return None
+
+    def get_color(self, menuobj):
+        """Return a (left_block_color, text_tint_color) tuple of QtGui.QColor or None.
+
+        left_block_color: solid colour filling the icon-width column on the left.
+          Use None when an icon is present (or when no left-block colour is wanted).
+        text_tint_color: semi-transparent wash applied only behind the text area,
+          also controls foreground text colour via luminance.
+        Either element may be None to suppress that part of the colouring.
+        """
+        return (None, None)
 
 
-def find_menu_items(menu, _path = None):
-    """Extracts items from a given Nuke menu
+def _normalize_qt_item_name(item):
+    item_name = item.text()
+    item_name = item_name.replace("&", "")
+    item_name = re.sub(r'^\s*\d+ \s*', '', item_name).strip()
+    return item_name
 
-    Returns a list of strings, with the path to each item
 
-    Ignores divider lines and hidden items (ones like "@;&CopyBranch" for shift+k)
-
-    >>> found = find_menu_items(nuke.menu("Nodes"))
-    >>> found.sort()
-    >>> found[:5]
-    ['3D/Axis', '3D/Camera', '3D/CameraTracker', '3D/DepthGenerator', '3D/Geometry/Card']
-    """
+def _traverse_qt_menu(menu, _path=None):
+    """Recursively traverse a QMenu, returning list of {'menuobj', 'menupath'} dicts."""
     found = []
 
-    mi = list(menu.items())
-    for i in mi:
-        if isinstance(i, nuke.Menu):
-            # Sub-menu, recurse
-            mname = i.name().replace("&", "")
-            subpath = "/".join(x for x in (_path, mname) if x is not None)
+    if not menu.isEnabled():
+        return []
 
-            if "ToolSets/Delete" in subpath:
-                # Remove all ToolSets delete commands
+    for item in menu.actions():
+        if not (item.isVisible() and item.isEnabled()):
+            continue
+
+        item_name = _normalize_qt_item_name(item)
+        submenu = item.menu()
+
+        if submenu:
+            subpath = "/".join(x for x in (_path, item_name) if x is not None)
+            found.extend(_traverse_qt_menu(submenu, _path=subpath))
+        else:
+            if item.data() == "":
+                # skip if no actual action
                 continue
-
-            sub_found = find_menu_items(menu = i, _path = subpath)
-            found.extend(sub_found)
-        elif isinstance(i, nuke.MenuItem):
-            if i.name() == "":
+            if item.text() == "":
                 # Skip dividers
                 continue
-            if i.name().startswith("@;"):
-                # Skip hidden items
-                continue
 
-            subpath = "/".join(x for x in (_path, i.name()) if x is not None)
-            found.append({'menuobj': i, 'menupath': subpath})
+            subpath = "/".join(x for x in (_path, item_name) if x is not None)
+            found.append({'menuobj': item, 'menupath': subpath})
 
     return found
 
 
-def consec_find(needle, haystack, anchored = False):
+def find_qt_menu_items(menubar):
+    """Traverse a QMenuBar and return all leaf menu items.
+
+    Returns a list of {'menuobj': QAction, 'menupath': str} dicts.
+    Usable by any Qt app plugin without importing anything app-specific.
+    """
+    items = []
+    for action in menubar.actions():
+        if action.menu():
+            items.extend(_traverse_qt_menu(action.menu(), _path=action.text()))
+    return items
+
+
+def consec_find(needle, haystack, anchored=False):
     ''' searches for the "needle" string in the "haystack" string.
         added to tabtabtab as a way to prioritize more relevant results.
     '''
@@ -74,7 +112,7 @@ def consec_find(needle, haystack, anchored = False):
     if "[" not in needle:
         haystack = haystack.rpartition(" [")[0]
 
-    stripped_haystack = haystack.replace(' ','').replace('-','').replace('_','')
+    stripped_haystack = haystack.replace(' ', '').replace('-', '').replace('_', '')
 
     if anchored:
         if haystack.startswith(needle) or stripped_haystack.startswith(needle):
@@ -85,9 +123,8 @@ def consec_find(needle, haystack, anchored = False):
             return True
     return False
 
-    
 
-def nonconsec_find(needle, haystack, anchored = False):
+def nonconsec_find(needle, haystack, anchored=False):
     """checks if each character of "needle" can be found in order (but not
     necessarily consecutivly) in haystack.
     For example, "mm" can be found in "matchmove", but not "move2d"
@@ -134,7 +171,6 @@ def nonconsec_find(needle, haystack, anchored = False):
         # ..?
         return True
 
-
     # Turn haystack into list of characters (as strings are immutable)
     haystack = [hay for hay in str(haystack)]
 
@@ -167,7 +203,7 @@ def nonconsec_find(needle, haystack, anchored = False):
 
 
 class NodeWeights(object):
-    def __init__(self, fname = None):
+    def __init__(self, fname=None):
         self.fname = fname
         self._weights = {}
         self._successful_load = False
@@ -213,12 +249,12 @@ class NodeWeights(object):
                 try:
                     os.makedirs(ndir)
                 except OSError as e:
-                    if e.errno != 17: # errno 17 is "already exists"
+                    if e.errno != 17:  # errno 17 is "already exists"
                         raise
 
             f = open(self.fname, "w")
             # TODO: Limit number of saved items to some sane number
-            json.dump(self._weights, fp = f)
+            json.dump(self._weights, fp=f)
             f.close()
 
         # Catch any errors, print traceback and continue
@@ -229,7 +265,7 @@ class NodeWeights(object):
             import traceback
             traceback.print_exc()
 
-    def get(self, k, default = 0):
+    def get(self, k, default=0):
         if len(list(self._weights.values())) == 0:
             maxval = 1.0
         else:
@@ -245,7 +281,7 @@ class NodeWeights(object):
 
 
 class NodeModel(QtCore.QAbstractListModel):
-    def __init__(self, mlist, weights, num_items = 18, filtertext = ""):
+    def __init__(self, mlist, weights, num_items=18, filtertext="", icon_fn=None, color_fn=None):
         super(NodeModel, self).__init__()
 
         self.weights = weights
@@ -253,6 +289,8 @@ class NodeModel(QtCore.QAbstractListModel):
 
         self._all = mlist
         self._filtertext = filtertext
+        self._icon_fn = icon_fn if icon_fn is not None else (lambda obj: None)
+        self._color_fn = color_fn if color_fn is not None else (lambda obj: (None, None))
 
         # _items is the list of objects to be shown, update sets this
         self._items = []
@@ -261,13 +299,17 @@ class NodeModel(QtCore.QAbstractListModel):
     def set_filter(self, filtertext):
         self._filtertext = filtertext
         self.update()
-        
+
+    def refresh_items(self, mlist):
+        self._all = mlist
+        self.update()
+
     def update(self):
         filtertext = self._filtertext.lower()
 
         # Two spaces as a shortcut for [
         filtertext = filtertext.replace("  ", "[")
-        
+
         anchored = True
         force_non_anchored = False
         # Starting the string with * or [ disables anchoring.
@@ -288,75 +330,75 @@ class NodeModel(QtCore.QAbstractListModel):
             search_string = uiname.lower()
 
             if force_non_anchored:
-                search_string = search_string[1:]      
-            
+                search_string = search_string[1:]
+
             if consec_find(filtertext, search_string, anchored):
                 # Matches, get weighting and add to list of stuff
                 score = self.weights.get(n['menupath'])
 
                 scored_a.append({
-                        'text': uiname,
-                        'menupath': n['menupath'],
-                        'menuobj': n['menuobj'],
-                        'score': score})   
+                    'text': uiname,
+                    'menupath': n['menupath'],
+                    'menuobj': n['menuobj'],
+                    'score': score,
+                    'color': self._color_fn(n['menuobj'])})
 
             elif nonconsec_find(filtertext, search_string, anchored):
                 # Matches, get weighting and add to list of stuff
                 score = self.weights.get(n['menupath'])
 
                 scored_b.append({
-                        'text': uiname,
-                        'menupath': n['menupath'],
-                        'menuobj': n['menuobj'],
-                        'score': score})
+                    'text': uiname,
+                    'menupath': n['menupath'],
+                    'menuobj': n['menuobj'],
+                    'score': score,
+                    'color': self._color_fn(n['menuobj'])})
 
         # Sort based on scores (descending), then alphabetically
-        sort_a = sorted(scored_a, key = lambda k: (-k['score'], k['text']))
-        sort_b = sorted(scored_b, key = lambda k: (-k['score'], k['text']))
+        sort_a = sorted(scored_a, key=lambda k: (-k['score'], k['text']))
+        sort_b = sorted(scored_b, key=lambda k: (-k['score'], k['text']))
         s = sort_a + sort_b
 
         self._items = s
         self.modelReset.emit()
 
-    def rowCount(self, parent = QtCore.QModelIndex()):
+    def rowCount(self, parent=QtCore.QModelIndex()):
         return min(self.num_items, len(self._items))
 
-    def data(self, index, role = Qt.DisplayRole):
+    def data(self, index, role=Qt.DisplayRole):
         if role == Qt.DisplayRole:
             # Return text to display
             raw = self._items[index.row()]['text']
             return raw
 
         elif role == Qt.DecorationRole:
-            weight = self._items[index.row()]['score']
-
-            hue = 0.4
-            sat = weight
-
-            if index.row() % 2 == 0:
-                col = QtGui.QColor.fromHsvF(hue, sat, 0.9)
-            else:
-                col = QtGui.QColor.fromHsvF(hue, sat, 0.8)
-
-            pix = QtGui.QPixmap(6, 12)
-            pix.fill(col)
-            return pix
+            icon = self._icon_fn(self._items[index.row()]['menuobj'])
+            if isinstance(icon, QtGui.QIcon) and not icon.isNull():
+                return icon
+            return None
 
         elif role == Qt.BackgroundRole:
-            return
-            weight = self._items[index.row()]['score']
+            left_block_color, text_tint_color = self._items[index.row()]['color']
+            if text_tint_color is None:
+                return None
+            tinted = QtGui.QColor(text_tint_color.red(), text_tint_color.green(), text_tint_color.blue(), 80)  # 31% opacity
+            return QtGui.QBrush(tinted)
 
-            hue = 0.4
-            sat = weight ** 2 # gamma saturation to make faster falloff
-
-            sat = min(1.0, sat)
-
-            if index.row() % 2 == 0:
-                return QtGui.QColor.fromHsvF(hue, sat, 0.9)
+        elif role == Qt.ForegroundRole:
+            _, text_tint_color = self._items[index.row()]['color']
+            if text_tint_color is None:
+                return None
+            luminance = 0.299 * text_tint_color.red() + 0.587 * text_tint_color.green() + 0.114 * text_tint_color.blue()
+            if luminance > 160:
+                return QtGui.QBrush(QtGui.QColor(40, 40, 40))
             else:
-                return QtGui.QColor.fromHsvF(hue, sat, 0.8)
+                return QtGui.QBrush(QtGui.QColor(220, 220, 220))
+
+        elif role == Qt.UserRole:
+            left_block_color, _ = self._items[index.row()]['color']
+            return left_block_color
+
         else:
-            # Ignore other roles
             return None
 
     def getorig(self, selected):
@@ -379,7 +421,6 @@ class NodeModel(QtCore.QAbstractListModel):
 class TabyLineEdit(QtWidgets.QLineEdit):
     pressed_arrow = QtCore.Signal(str)
     cancelled = QtCore.Signal()
-
 
     def event(self, event):
         """Make tab trigger returnPressed
@@ -411,39 +452,101 @@ class TabyLineEdit(QtWidgets.QLineEdit):
             return super(TabyLineEdit, self).event(event)
 
 
+class _ItemDelegate(QtWidgets.QStyledItemDelegate):
+    """Custom delegate: fixed row height, full-width tinted background,
+    solid colour icon block, and outline-only selection highlight."""
+
+    def __init__(self, height, icon_w, parent=None):
+        super(_ItemDelegate, self).__init__(parent)
+        self._height = height
+        self._icon_w = icon_w
+
+    def sizeHint(self, option, index):
+        sh = super(_ItemDelegate, self).sizeHint(option, index)
+        return QtCore.QSize(sh.width(), self._height)
+
+    def paint(self, painter, option, index):
+        painter.save()
+        rect = option.rect
+
+        # Determine what occupies the left icon column so we can compute the
+        # text rect before drawing anything (the background wash uses it).
+        left_block_color = index.data(Qt.UserRole)  # solid colour block, or None
+        icon = index.data(Qt.DecorationRole)
+        has_icon = isinstance(icon, QtGui.QIcon) and not icon.isNull()
+        has_left_block = left_block_color is not None or has_icon
+
+        text_left = rect.left() + (self._icon_w + 6 if has_left_block else 4)
+        text_rect = QtCore.QRect(text_left, rect.top(), rect.right() - text_left, rect.height())
+
+        # 1. Tinted background wash — from the right edge of the left block to
+        # the end of the row, so there is no uncoloured gap before the text.
+        bg_brush = index.data(Qt.BackgroundRole)
+        if bg_brush is not None:
+            bg_left = rect.left() + (self._icon_w if has_left_block else 0)
+            bg_rect = QtCore.QRect(bg_left, rect.top(), rect.right() - bg_left, rect.height())
+            painter.fillRect(bg_rect, bg_brush)
+
+        # 2. Left icon column: solid colour block as background, then QIcon on top
+        if left_block_color is not None:
+            icon_rect = QtCore.QRect(rect.left(), rect.top(), self._icon_w, rect.height())
+            painter.fillRect(icon_rect, left_block_color)
+        if has_icon:
+            icon_size = min(self._icon_w, rect.height()) - 4
+            icon_x = rect.left() + (self._icon_w - icon_size) // 2
+            icon_y = rect.top() + (rect.height() - icon_size) // 2
+            icon.paint(painter, icon_x, icon_y, icon_size, icon_size)
+
+        # 3. Selection as outline only (1px border, highlight colour)
+        if option.state & QtWidgets.QStyle.State_Selected:
+            pen = QtGui.QPen(option.palette.highlight().color(), 1)
+            painter.setPen(pen)
+            painter.drawRect(rect.adjusted(0, 0, -1, -1))
+
+        # 4. Text
+        fg = index.data(Qt.ForegroundRole)
+        painter.setPen(fg.color() if fg else option.palette.text().color())
+        text = index.data(Qt.DisplayRole) or ""
+        painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, text)
+
+        painter.restore()
+
+
 class TabTabTabWidget(QtWidgets.QDialog):
-    def __init__(self, on_create = None, parent = None, winflags = None):
-        super(TabTabTabWidget, self).__init__(parent = parent)
+    def __init__(self, plugin, parent=None, winflags=None):
+        super(TabTabTabWidget, self).__init__(parent=parent)
         if winflags is not None:
             self.setWindowFlags(winflags)
 
-        self.setMinimumSize(200, 300)
-        self.setMaximumSize(200, 300)
-
-        # Store callback
-        self.cb_on_create = on_create
+        self.plugin = plugin
 
         # Input box
         self.input = TabyLineEdit()
 
         # Node weighting
-        self.weights = NodeWeights(os.path.expanduser("~/.nuke/tabtabtab_weights.json"))
-        self.weights.load() # weights.save() called in close method
+        self.weights = NodeWeights(plugin.get_weights_file())
+        self.weights.load()  # weights.save() called in close method
 
-        nodes = find_menu_items(nuke.menu("Nodes")) + find_menu_items(nuke.menu("Nuke"))
+        items = plugin.get_items()
 
         # List of stuff, and associated model
-        self.things_model = NodeModel(nodes, weights = self.weights)
+        self.things_model = NodeModel(items, weights=self.weights, icon_fn=plugin.get_icon, color_fn=plugin.get_color)
         self.things = QtWidgets.QListView()
         self.things.setModel(self.things_model)
+        self.things.setUniformItemSizes(True)
+        self.input.setFont(self.things.font())
+
+        _font_h = self.things.fontMetrics().height()
+        _row_h = _font_h * 2
+        self.things.setItemDelegate(_ItemDelegate(_row_h, _row_h, self.things))
+        self.things.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.input.setTextMargins(2, _font_h // 2, 2, _font_h // 2)
 
         # Add input and items to layout
         layout = QtWidgets.QVBoxLayout()
         layout.addWidget(self.input)
         layout.addWidget(self.things)
 
-        # Remove margins
-        layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(layout)
 
         # Update on text change
@@ -451,7 +554,7 @@ class TabTabTabWidget(QtWidgets.QDialog):
 
         # Reset selection on text change
         self.input.textChanged.connect(lambda: self.move_selection(where="first"))
-        self.move_selection(where = "first") # Set initial selection
+        self.move_selection(where="first")  # Set initial selection
 
         # Create node when enter/tab is pressed, or item is clicked
         self.input.returnPressed.connect(self.create)
@@ -463,6 +566,42 @@ class TabTabTabWidget(QtWidgets.QDialog):
         # Up and down arrow handling
         self.input.pressed_arrow.connect(self.move_selection)
 
+        self._resize_list_to_contents()
+
+        self.adjustSize()
+
+    def _resize_list_to_contents(self):
+        """Compute total size required by the list's rows and set that size."""
+        model = self.things.model()
+        if model is None:
+            return
+
+        rows = model.rowCount()
+        total_h = 0
+
+        for i in range(rows):
+            row_h = self.things.sizeHintForRow(i)
+            if row_h <= 0:
+                idx = model.index(i, 0)
+                sh = self.things.sizeHintForIndex(idx)
+                row_h = sh.height() if not sh.isEmpty() else 0
+            total_h += row_h
+
+        if rows > 1:
+            total_h += self.things.spacing() * (rows - 1)
+
+        # include frame width/borders
+        try:
+            fw = self.things.frameWidth()
+        except Exception:
+            fw = 0
+
+        total_h += 2 * fw
+
+        # apply the computed size
+        if total_h > 0:
+            self.things.setFixedHeight(total_h)
+
     def under_cursor(self):
         def clamp(val, mi, ma):
             return max(min(val, ma), mi)
@@ -472,12 +611,12 @@ class TabTabTabWidget(QtWidgets.QDialog):
         screen = self.screen().geometry()
 
         # Get window position so cursor is just over text input
-        xpos = cursor.x() - (self.width()/2)
+        xpos = cursor.x() - (self.width() / 2)
         ypos = cursor.y() - 13
 
         # Clamp window location to prevent it going offscreen
         xpos = clamp(xpos, screen.left(), screen.right() - self.width())
-        ypos = clamp(ypos, screen.top(), screen.bottom() - (self.height()-13))
+        ypos = clamp(ypos, screen.top(), screen.bottom() - (self.height() - 13))
 
         # Move window
         self.move(xpos, ypos)
@@ -485,7 +624,7 @@ class TabTabTabWidget(QtWidgets.QDialog):
     def move_selection(self, where):
         if where not in ["first", "up", "down"]:
             raise ValueError("where should be either 'first', 'up', 'down', not %r" % (
-                    where))
+                where))
 
         first = where == "first"
         up = where == "up"
@@ -503,14 +642,13 @@ class TabTabTabWidget(QtWidgets.QDialog):
         elif down:
             new = cur.row() + 1
             count = self.things_model.rowCount()
-            if new > count-1:
+            if new > count - 1:
                 new = 0
 
         self.things.setCurrentIndex(self.things_model.index(new))
 
     def event(self, event):
-        """Close when window becomes inactive (click outside of window)
-        """
+        """Close when window becomes inactive (click outside of window)"""
         if event.type() == QtCore.QEvent.WindowDeactivate:
             self.close()
             return True
@@ -518,8 +656,7 @@ class TabTabTabWidget(QtWidgets.QDialog):
             return super(TabTabTabWidget, self).event(event)
 
     def update(self, text):
-        """On text change, selects first item and updates filter text
-        """
+        """On text change, selects first item and updates filter text"""
         self.things.setCurrentIndex(self.things_model.index(0))
         self.things_model.set_filter(text)
 
@@ -532,8 +669,14 @@ class TabTabTabWidget(QtWidgets.QDialog):
         """
 
         # Load the weights everytime the panel is shown, to prevent
-        # overwritting weights from other Nuke instances
+        # overwritting weights from other instances
         self.weights.load()
+
+        # Refresh items from the plugin so additions/removals are reflected
+        self.things_model.refresh_items(self.plugin.get_items())
+
+        # Restore selection to the first item, since modelReset clears it
+        self.move_selection(where="first")
 
         # Select all text to allow overwriting
         self.input.selectAll()
@@ -542,8 +685,7 @@ class TabTabTabWidget(QtWidgets.QDialog):
         super(TabTabTabWidget, self).show()
 
     def close(self):
-        """Save weights when closing
-        """
+        """Save weights when closing"""
         self.weights.save()
         super(TabTabTabWidget, self).close()
 
@@ -565,14 +707,16 @@ class TabTabTabWidget(QtWidgets.QDialog):
 
         self.input.setText(prev_string)
 
-        # Create node, increment weight and close
-        self.cb_on_create(thing = thing)
+        # Invoke item, increment weight and close
+        self.plugin.invoke(thing)
         self.weights.increment(thing['menupath'])
         self.close()
 
 
 _tabtabtab_instance = None
-def main():
+
+
+def launch(plugin):
     global _tabtabtab_instance
 
     if _tabtabtab_instance is not None:
@@ -580,19 +724,15 @@ def main():
         # TabTabTabWidget is instanced, it goes out of scope at end of
         # function and disappers instantly. This seems like a
         # reasonable "workaround"
-
-        _tabtabtab_instance.under_cursor()
-        _tabtabtab_instance.show()
-        _tabtabtab_instance.raise_()
-        return
-
-    def on_create(thing):
         try:
-            thing['menuobj'].invoke()
-        except ImportError:
-            print("Error creating %s" % thing)
+            _tabtabtab_instance.under_cursor()
+            _tabtabtab_instance.show()
+            _tabtabtab_instance.raise_()
+            return
+        except ReferenceError:
+            _tabtabtab_instance = None
 
-    t = TabTabTabWidget(on_create = on_create, winflags = Qt.FramelessWindowHint)
+    t = TabTabTabWidget(plugin, winflags=Qt.FramelessWindowHint)
 
     # Make dialog appear under cursor, as Nuke's builtin one does
     t.under_cursor()
@@ -606,26 +746,3 @@ def main():
     # https://github.com/dbr/tabtabtab-nuke/issues/4
     import weakref
     _tabtabtab_instance = weakref.proxy(t)
-
-
-if IN_NUKE:
-    if nuke.NUKE_VERSION_MAJOR >= 9:
-        _getParentMenu = lambda: nuke.menu("Node Graph")
-    else:
-        _getParentMenu = lambda: nuke.menu("Nuke").findItem("Edit")
-
-
-    def registerNukeAction():
-        menu = _getParentMenu()
-        if menu.findItem("Tabtabtab") is None:
-            return menu.addCommand("Tabtabtab", main, "Tab")
-
-
-    def unregisterNukeAction():
-        return _getParentMenu().removeItem("Tabtabtab")
-
-
-if __name__ == '__main__' and not IN_NUKE:
-    app = QtGui.QApplication(sys.argv)
-    main()
-    app.exec_()
