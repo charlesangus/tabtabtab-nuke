@@ -307,14 +307,21 @@ class NodeModel(QtCore.QAbstractListModel):
     def update(self):
         filtertext = self._filtertext.lower()
 
-        # Two spaces as a shortcut for [
-        filtertext = filtertext.replace("  ", "[")
-
         anchored = True
         force_non_anchored = False
-        # Starting the string with * or [ disables anchoring.
-        # Starting with ** forces non anchored results
-        if filtertext.startswith('*') or filtertext.startswith('['):
+        force_consecutive = False
+
+        # Two leading spaces: non-fuzzy (consecutive substring) search, non-anchored
+        if filtertext.startswith('  '):
+            anchored = False
+            force_consecutive = True
+            filtertext = filtertext[2:]
+        # One leading space: non-anchored fuzzy search
+        elif filtertext.startswith(' '):
+            anchored = False
+            filtertext = filtertext[1:]
+        # * or [ prefix: non-anchored fuzzy (legacy shortcuts, unchanged)
+        elif filtertext.startswith('*') or filtertext.startswith('['):
             anchored = False
             filtertext = filtertext.replace("*", "", 1)
             if filtertext.startswith('*'):
@@ -343,7 +350,7 @@ class NodeModel(QtCore.QAbstractListModel):
                     'score': score,
                     'color': self._color_fn(n['menuobj'])})
 
-            elif nonconsec_find(filtertext, search_string, anchored):
+            elif not force_consecutive and nonconsec_find(filtertext, search_string, anchored):
                 # Matches, get weighting and add to list of stuff
                 score = self.weights.get(n['menupath'])
 
