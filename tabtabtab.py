@@ -578,36 +578,20 @@ class TabTabTabWidget(QtWidgets.QDialog):
         self.adjustSize()
 
     def _resize_list_to_contents(self):
-        """Compute total size required by the list's rows and set that size."""
-        model = self.things.model()
-        if model is None:
-            return
+        """Set list height to always show num_items rows, giving a fixed popup size."""
+        num_rows = self.things_model.num_items
 
-        rows = model.rowCount()
-        total_h = 0
+        row_h = self.things.sizeHintForRow(0)
+        if row_h <= 0:
+            row_h = 20  # fallback row height in pixels
 
-        for i in range(rows):
-            row_h = self.things.sizeHintForRow(i)
-            if row_h <= 0:
-                idx = model.index(i, 0)
-                sh = self.things.sizeHintForIndex(idx)
-                row_h = sh.height() if not sh.isEmpty() else 0
-            total_h += row_h
-
-        if rows > 1:
-            total_h += self.things.spacing() * (rows - 1)
-
-        # include frame width/borders
         try:
             fw = self.things.frameWidth()
         except Exception:
             fw = 0
 
-        total_h += 2 * fw
-
-        # apply the computed size
-        if total_h > 0:
-            self.things.setFixedHeight(total_h)
+        total_h = row_h * num_rows + self.things.spacing() * max(0, num_rows - 1) + 2 * fw
+        self.things.setFixedHeight(total_h)
 
     def under_cursor(self):
         def clamp(val, mi, ma):
