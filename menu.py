@@ -11,4 +11,18 @@ except Exception:
     traceback.print_exc()
 
 edit_menu = nuke.menu("Nuke").findItem("Edit")
-edit_menu.addCommand("Tabtabtab Preferences...", tabtabtab_prefs_dialog.show_prefs_dialog)
+
+def _find_item_index(parent_menu, item_name):
+    for position, menu_item in enumerate(parent_menu.items()):
+        if menu_item.name() == item_name:
+            return position
+    return -1
+
+project_settings_index = _find_item_index(edit_menu, "Project Settings...")
+insert_index = project_settings_index + 1
+
+edit_menu.addCommand(
+    "Tabtabtab Preferences...",
+    tabtabtab_prefs_dialog.show_prefs_dialog,
+    index=insert_index,
+)
