@@ -1,4 +1,5 @@
 import os
+import re
 import nuke
 
 try:
@@ -6,13 +7,30 @@ try:
 except ImportError:
     from PySide2 import QtGui
 
-from tabtabtab import TabTabTabPlugin, launch
+from tabtabtab_nuke_core import TabTabTabPlugin, launch
 
 
-def _find_nuke_menu_items(menu, _path=None):
+def _extract_node_class_from_script(script_text):
+    """Parse a menu item's command string for the actual node class name."""
+    if not script_text:
+        return None
+    # Python form: any module calling createNode or createNodeLocal
+    # e.g. nuke.createNode("ScanlineRender2") or nukescripts.createNodeLocal("ScanlineRender2")
+    match = re.search(r'createNode(?:Local)?\s*\(\s*["\'](\w+)["\']', script_text)
+    if match:
+        return match.group(1)
+    # Tcl form: bare class name as the entire command
+    match = re.match(r'^(\w+)$', script_text.strip())
+    if match:
+        return match.group(1)
+    return None
+
+
+def _find_nuke_menu_items(menu, _path=None, is_node=True):
     """Extracts items from a given Nuke menu
 
-    Returns a list of {'menuobj': ..., 'menupath': str} dicts.
+    Returns a list of {'menuobj': ..., 'menupath': str, 'is_node': bool,
+    'actual_class': str or None, 'shortcut': str or None} dicts.
 
     Ignores divider lines and hidden items (ones like "@;&CopyBranch" for shift+k)
     """
@@ -29,7 +47,7 @@ def _find_nuke_menu_items(menu, _path=None):
                 # Remove all ToolSets delete commands
                 continue
 
-            sub_found = _find_nuke_menu_items(menu=i, _path=subpath)
+            sub_found = _find_nuke_menu_items(menu=i, _path=subpath, is_node=is_node)
             found.extend(sub_found)
         elif isinstance(i, nuke.MenuItem):
             if i.name() == "":
@@ -39,16 +57,52 @@ def _find_nuke_menu_items(menu, _path=None):
                 # Skip hidden items
                 continue
 
+            # Extract the actual node class from the command script
+            actual_class = None
+            try:
+                script_text = i.script()
+                actual_class = _extract_node_class_from_script(script_text)
+            except Exception:
+                pass
+            if actual_class is None:
+                actual_class = i.name()
+
+            # Extract keyboard shortcut if available
+            shortcut = None
+            try:
+                shortcut_str = i.shortcut()
+                if shortcut_str:
+                    shortcut = shortcut_str
+            except Exception:
+                pass
+
             subpath = "/".join(x for x in (_path, i.name()) if x is not None)
-            found.append({'menuobj': i, 'menupath': subpath})
+            found.append({
+                'menuobj': i,
+                'menupath': subpath,
+                'is_node': is_node,
+                'actual_class': actual_class,
+                'shortcut': shortcut,
+            })
 
     return found
 
 
 class NukePlugin(TabTabTabPlugin):
+    def __init__(self):
+        self._menuobj_metadata = {}  # id(menuobj) -> {is_node, actual_class}
+
     def get_items(self):
-        return (_find_nuke_menu_items(nuke.menu("Nodes")) +
-                _find_nuke_menu_items(nuke.menu("Nuke")))
+        self._menuobj_metadata = {}
+        node_items = _find_nuke_menu_items(nuke.menu("Nodes"), is_node=True)
+        menu_items = _find_nuke_menu_items(nuke.menu("Nuke"), is_node=False)
+        all_items = node_items + menu_items
+        for item in all_items:
+            self._menuobj_metadata[id(item['menuobj'])] = {
+                'is_node': item['is_node'],
+                'actual_class': item['actual_class'],
+            }
+        return all_items
 
     def get_weights_file(self):
         return os.path.expanduser("~/.nuke/tabtabtab_weights.json")
@@ -68,8 +122,12 @@ class NukePlugin(TabTabTabPlugin):
         return None
 
     def get_color(self, menuobj):
+        metadata = self._menuobj_metadata.get(id(menuobj), {})
+        if not metadata.get('is_node', False):
+            return (None, None)
+        actual_class = metadata.get('actual_class', menuobj.name())
         try:
-            packed_color = nuke.defaultNodeColor(menuobj.name())
+            packed_color = nuke.defaultNodeColor(actual_class)
             if packed_color == 0:
                 return (None, None)
             # Skip nodes whose colour comes from the global preference default

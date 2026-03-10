@@ -339,12 +339,16 @@ class NodeModel(QtCore.QAbstractListModel):
             if force_non_anchored:
                 search_string = search_string[1:]
 
+            shortcut = n.get('shortcut')
+            display_text = "%s (%s)" % (uiname, shortcut) if shortcut else uiname
+
             if consec_find(filtertext, search_string, anchored):
                 # Matches, get weighting and add to list of stuff
                 score = self.weights.get(n['menupath'])
 
                 scored_a.append({
                     'text': uiname,
+                    'display_text': display_text,
                     'menupath': n['menupath'],
                     'menuobj': n['menuobj'],
                     'score': score,
@@ -356,6 +360,7 @@ class NodeModel(QtCore.QAbstractListModel):
 
                 scored_b.append({
                     'text': uiname,
+                    'display_text': display_text,
                     'menupath': n['menupath'],
                     'menuobj': n['menuobj'],
                     'score': score,
@@ -374,9 +379,8 @@ class NodeModel(QtCore.QAbstractListModel):
 
     def data(self, index, role=Qt.DisplayRole):
         if role == Qt.DisplayRole:
-            # Return text to display
-            raw = self._items[index.row()]['text']
-            return raw
+            item = self._items[index.row()]
+            return item.get('display_text', item['text'])
 
         elif role == Qt.DecorationRole:
             icon = self._icon_fn(self._items[index.row()]['menuobj'])
@@ -481,23 +485,24 @@ class _ItemDelegate(QtWidgets.QStyledItemDelegate):
         left_block_color = index.data(Qt.UserRole)  # solid colour block, or None
         icon = index.data(Qt.DecorationRole)
         has_icon = isinstance(icon, QtGui.QIcon) and not icon.isNull()
-        has_left_block = left_block_color is not None or has_icon
 
-        text_left = rect.left() + (self._icon_w + 6 if has_left_block else 4)
+        # Always reserve the left block space — text is always indented the same amount.
+        text_left = rect.left() + self._icon_w + 6
         text_rect = QtCore.QRect(text_left, rect.top(), rect.right() - text_left, rect.height())
 
         # 1. Tinted background wash — from the right edge of the left block to
         # the end of the row, so there is no uncoloured gap before the text.
         bg_brush = index.data(Qt.BackgroundRole)
         if bg_brush is not None:
-            bg_left = rect.left() + (self._icon_w if has_left_block else 0)
+            bg_left = rect.left() + self._icon_w
             bg_rect = QtCore.QRect(bg_left, rect.top(), rect.right() - bg_left, rect.height())
             painter.fillRect(bg_rect, bg_brush)
 
-        # 2. Left icon column: solid colour block as background, then QIcon on top
-        if left_block_color is not None:
-            icon_rect = QtCore.QRect(rect.left(), rect.top(), self._icon_w, rect.height())
-            painter.fillRect(icon_rect, left_block_color)
+        # 2. Left icon column: solid colour block as background (neutral grey when no colour),
+        # then QIcon on top.
+        icon_rect = QtCore.QRect(rect.left(), rect.top(), self._icon_w, rect.height())
+        block_fill = left_block_color if left_block_color is not None else QtGui.QColor(50, 50, 50)
+        painter.fillRect(icon_rect, block_fill)
         if has_icon:
             icon_size = min(self._icon_w, rect.height()) - 4
             icon_x = rect.left() + (self._icon_w - icon_size) // 2
