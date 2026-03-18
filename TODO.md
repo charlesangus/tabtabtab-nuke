@@ -1,0 +1,2 @@
+- fix only opening on left monitor of two, should open on either monitor as appropriate, presumably a bug in the "open under mouse" logic?
+- unfork this repo from the ancient and abandoned main dbr repo
