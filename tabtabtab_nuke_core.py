@@ -604,7 +604,12 @@ class TabTabTabWidget(QtWidgets.QDialog):
 
         # Get cursor position, and screen dimensions on active screen
         cursor = QtGui.QCursor().pos()
-        screen = self.screen().geometry()
+        screen_obj = None
+        if hasattr(QtWidgets.QApplication, 'screenAt'):
+            screen_obj = QtWidgets.QApplication.screenAt(cursor)
+        if screen_obj is None:
+            screen_obj = self.screen()
+        screen = screen_obj.geometry()
 
         # Get window position so cursor is just over text input
         xpos = cursor.x() - (self.width() / 2)
