@@ -12,7 +12,8 @@ A faster, smarter command palette for [Foundry's Nuke](https://www.foundry.com/p
 | Finds menu items (e.g. File > Exit) | Yes | No — nodes only |
 | Per-category colour blocks | Yes | No |
 | Node icons in results | Yes | No |
-| Usage-weighted ranking | Yes | No |
+| Keyboard shortcuts in results | Yes | No |
+| Usage-weighted ranking | Yes | Yes — but displays the weight number, which is redundant since ordering already reflects it |
 
 **Anchored fuzzy matching** is the key difference. When you type "blr", tabtabtab matches "Blur" because the letters appear in order from the start of a word. Nuke's built-in menu uses non-anchored matching, which returns every item that contains those letters anywhere — usually dozens of irrelevant results for short queries.
 
@@ -28,7 +29,7 @@ Node icons in the left column and colour-coded rows by node category:
 
 Category search — type `[` to include the category tag in your search (`ax[3` → Axis [3D]):
 
-![Category search with [ prefix](imgs/tabtabtab-category-search.png)
+![Category search using the \[ prefix](imgs/tabtabtab-category-search.png)
 
 Menu items appear alongside nodes — type `anch` to find Edit > Anchors commands:
 
@@ -147,3 +148,9 @@ Nodes whose tile colour is the Nuke global default (no class-specific colour) ar
 - **Nuke 15 and later** (PySide6)
 
 Both Qt bindings are supported. The correct one is selected automatically at import time.
+
+---
+
+## Attribution
+
+tabtabtab is based on [dbr/tabtabtab](https://github.com/dbr/tabtabtab) by dbr, which appears to be no longer maintained. This fork extends the original with multi-monitor support, visual improvements (colour blocks, node icons), PySide6 compatibility, and CI/CD infrastructure.
