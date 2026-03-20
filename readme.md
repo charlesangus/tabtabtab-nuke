@@ -22,37 +22,49 @@ A faster, smarter command palette for [Foundry's Nuke](https://www.foundry.com/p
 
 ## Screenshots
 
-Colour blocks tinted from each node's tile colour make categories instantly recognisable:
+Node icons in the left column and colour-coded rows by node category:
 
-![Palette with colour blocks](imgs/palette-colour-blocks.png)
+![Palette with node icons and colour blocks](imgs/tabtabtab-icons-colours.png)
 
-Node icons appear in the left column when Nuke provides them:
+Category search — type `[` to include the category tag in your search (`ax[3` → Axis [3D]):
 
-![Palette with node icons](imgs/palette-icons.png)
+![Category search with [ prefix](imgs/tabtabtab-category-search.png)
 
-Category search — type `[` to include the category tag in your search:
+Menu items appear alongside nodes — type `anch` to find Edit > Anchors commands:
 
-![Category search with [ prefix](imgs/category-search.png)
+![Palette showing menu items](imgs/tabtabtab-menu-items.png)
 
-Menu items (non-node results) appear alongside nodes:
+Non-anchored search (leading space) — matches letters anywhere in the name:
 
-![Palette showing menu items](imgs/menu-items.png)
+![Non-anchored search results](imgs/tabtabtab-non-anchored-search.png)
 
 ---
 
 ## Demo GIFs
 
-**Basic search** — open palette, type a partial name, Tab to create:
+**Basic usage** — open the palette, pick a node, create it:
 
-![Basic search demo](imgs/basic-search.gif)
+![Basic usage demo](imgs/tabtabtab-choose-item.gif)
 
-**Space-prefix repeat** — Tab again after creating a node to recreate it instantly:
+**Anchored fuzzy search** — letters match in order from the start of a word:
 
-![Space-prefix repeat demo](imgs/space-prefix-repeat.gif)
+![Anchored fuzzy find demo](imgs/tabtabtab-anchored-fuzzy-find.gif)
+
+**Non-anchored search** — add a leading space to match anywhere in the name:
+
+![Non-anchored fuzzy find demo](imgs/tabtabtab-non-anchored-fuzzy-find.gif)
+
+**Colours and icons** — colour blocks and node icons in action:
+
+![Colours and icons demo](imgs/tabtabtab-colours-icons.gif)
 
 **Category filter** — narrow results by category using `[`:
 
-![Category filter demo](imgs/category-filter.gif)
+![Category filter demo](imgs/tabtabtab-category-search.gif)
+
+**Repeat previous** — Tab again after creating a node to recreate it instantly:
+
+![Remember previous node demo](imgs/tabtabtab-remember-previous.gif)
 
 ---
 
