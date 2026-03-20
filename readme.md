@@ -1,127 +1,137 @@
 # tabtabtab
 
-A fuzzy/substring node creator for [The Foundry's Nuke](https://www.foundry.com/products/nuke).
+A faster, smarter command palette for [Foundry's Nuke](https://www.foundry.com/products/nuke) — replaces the built-in Tab menu with anchored fuzzy search, per-category colour blocks, node icons, and instant access to every menu item in Nuke.
 
-- Fuzzy and substring matching — type "blr" to match "Blur", "trge" to match "TransformGeo"
-- Each result row is tinted with the node's tile color from Nuke (Merge nodes are red, Color
-  nodes are orange, etc.), making it easy to visually identify node categories at a glance
-- Weights frequently-used nodes so they appear first in results
-- Exposes all menu items, not just nodes — type "exit" to trigger File > Exit
+---
 
-Ctrl+Tab still opens Nuke's built-in tab menu.
+## Why tabtabtab instead of Nuke's built-in Tab menu?
 
+| Feature | tabtabtab | Nuke built-in |
+|---------|-----------|---------------|
+| Anchored fuzzy matching ("blr" → Blur) | Yes | No — matches anywhere, so "blr" returns dozens of unrelated results |
+| Finds menu items (e.g. File > Exit) | Yes | No — nodes only |
+| Per-category colour blocks | Yes | No |
+| Node icons in results | Yes | No |
+| Usage-weighted ranking | Yes | No |
 
-# Installation
+**Anchored fuzzy matching** is the key difference. When you type "blr", tabtabtab matches "Blur" because the letters appear in order from the start of a word. Nuke's built-in menu uses non-anchored matching, which returns every item that contains those letters anywhere — usually dozens of irrelevant results for short queries.
 
-Clone or copy the `tabtabtab-nuke` directory into your Nuke plugin path (e.g. `~/.nuke/`).
-You can either add it to `NUKE_PATH` in your environment, or put the folder directly in `~/.nuke/`.
+**Menu items, not just nodes.** Type "exit" and tabtabtab shows "File > Exit". Type "pref" and it shows "Edit > Preferences". No more mousing through the menu bar.
 
-The included `menu.py` will auto-register tabtabtab when Nuke starts. No further configuration
-is needed.
+---
 
+## Screenshots
 
-# Preferences
+Colour blocks tinted from each node's tile colour make categories instantly recognisable:
 
-Open `Edit > Tabtabtab Preferences...` to access the preferences dialog. Currently this exposes:
+![Palette with colour blocks](imgs/palette-colour-blocks.png)
 
-- **Enable tabtabtab** — check or uncheck to enable or disable the plugin
+Node icons appear in the left column when Nuke provides them:
 
-Changes take effect immediately without restarting Nuke.
+![Palette with node icons](imgs/palette-icons.png)
 
+Category search — type `[` to include the category tag in your search:
 
-# Search modes
+![Category search with [ prefix](imgs/category-search.png)
 
-| Prefix | Behavior |
-|--------|----------|
-| (none) | Fuzzy, anchored to first letter — "blr" matches "Blur" but not "Blur2 [Filter]" via middle letters |
-| one space | Fuzzy, non-anchored — matches the pattern anywhere in the node name |
-| two spaces | Non-fuzzy consecutive substring, non-anchored — matches an exact run of letters anywhere |
+Menu items (non-node results) appear alongside nodes:
 
-**Category matching:** typing `[` anywhere in your search includes the `[Category]` part of the
-menu path. For example, "ax" matches both "AddMix [Merge]" and "Axis [3D]". Typing "ax[3d" will
-narrow that to only "Axis [3D]".
+![Palette showing menu items](imgs/menu-items.png)
 
+---
 
-# Keyboard shortcuts
+## Demo GIFs
+
+**Basic search** — open palette, type a partial name, Tab to create:
+
+![Basic search demo](imgs/basic-search.gif)
+
+**Space-prefix repeat** — Tab again after creating a node to recreate it instantly:
+
+![Space-prefix repeat demo](imgs/space-prefix-repeat.gif)
+
+**Category filter** — narrow results by category using `[`:
+
+![Category filter demo](imgs/category-filter.gif)
+
+---
+
+## Search modes
+
+| Prefix | Behaviour |
+|--------|-----------|
+| (none) | Anchored fuzzy match. Each character of your query must appear in order, starting from the beginning of the node name. "blr" matches "Blur" but not "ColorBurn". |
+| one space | Non-anchored fuzzy match. Characters must appear in order anywhere in the name. " blr" matches both "Blur" and "ColorBurn". |
+| two spaces | Non-anchored consecutive substring. The exact run of letters must appear somewhere in the name. "   blur" matches "MotionBlur" but not "Blur2". |
+| `[` | Include the category tag in the search. "ax[3d" narrows results to items whose category contains "3d", e.g. "Axis [3D]". Without `[`, the category tag is ignored. |
+
+### Space-prefix repeat behaviour
+
+After you create a node, tabtabtab pre-fills the search field with a leading space followed by the node's display name (for example, " Blur [Filter]"). The next time you press Tab to open the palette, that text is already in the field. Press Tab again without typing anything and the same node is created immediately — no searching required.
+
+The leading space is intentional: it enables non-anchored matching so the full display name (which includes the category tag) matches correctly against itself.
+
+---
+
+## Keyboard shortcuts
 
 | Key | Action |
 |-----|--------|
-| Tab or Enter | Create the selected node |
-| Up / Down | Navigate the result list |
-| Escape | Cancel and close |
+| Tab or Enter | Create the selected item |
+| Up / Down arrows | Navigate the result list |
+| Escape | Close without creating |
 
-The last search text is preserved — pressing Tab twice (opening tabtabtab with no typing) will
-recreate the previously created node.
+Ctrl+Tab still opens Nuke's built-in tab menu.
 
+---
 
-# Weighting
+## Quickstart / Installation
 
-Each time you create a node, its weight increases. Higher-weighted nodes appear earlier in the
-result list when multiple nodes match your search. Weights are saved between sessions.
+1. Download the latest release `.zip` from the [Releases](../../releases) page.
 
-There is no visual indicator of node weight; weighting affects ranking order only.
+2. Extract the contents into your Nuke plugin directory. The typical location is `~/.nuke/`. Alternatively, place the files anywhere on your `NUKE_PATH`.
 
+   The zip contains these five files — all of them are required:
 
-# Node colors
+   - `tabtabtab_nuke_core.py` — core palette engine
+   - `tabtabtab_nuke.py` — Nuke menu integration
+   - `menu.py` — auto-registration on Nuke startup
+   - `tabtabtab_prefs.py` — preferences persistence
+   - `tabtabtab_prefs_dialog.py` — preferences dialog (Edit > Tabtabtab Preferences...)
 
-Each result row is tinted with the node's tile color as defined in Nuke. The left column shows a
-solid block of the node's tile color, and the row background gets a semi-transparent wash of the
-same color. This makes it easy to visually distinguish node categories without reading the full
-name.
+3. Start (or restart) Nuke. tabtabtab registers automatically via `menu.py`. Press Tab in the Node Graph to open the palette.
 
+---
 
-# Notes
+## Preferences
 
-Requires Nuke 9 or higher. Tested with PySide6 (Nuke 16+).
+Open **Edit > Tabtabtab Preferences...** to access the preferences dialog.
 
+- **Enable tabtabtab** — uncheck to disable the plugin and restore Nuke's default Tab behaviour. Changes take effect immediately without restarting Nuke.
 
-# Change log
+---
 
-* `v2.0`
-  * Rewritten as a plugin architecture: shared core engine (`tabtabtab-core`) with a
-    Nuke-specific frontend
-  * Added preferences system (`Edit > Tabtabtab Preferences...`) with enable/disable toggle
-  * Node tile colors shown in result rows (solid color block + semi-transparent row background)
-  * `menu.py` included for zero-config installation via plugin path
-  * Nuke 16 / PySide6 support
-  * Search mode prefixes changed to leading spaces (one space = non-anchored fuzzy,
-    two spaces = consecutive substring)
+## Weighting
 
-* `v1.9`
-  * Integrating changes from @herronelou and @nrusch
+Each time you create a node, its usage weight increases. Higher-weighted nodes appear earlier in results when multiple items match your query. Weights are saved to `~/.nuke/tabtabtab_weights.json` between sessions.
 
-* `v1.8`
-  * Installation instructions updated to support Nuke 9
-  * Weights file no longer overwritten if it fails to load
-  * Support PySide2
+---
 
-* `v1.7`
-  * `ToolSets/Delete` submenu excluded from results
-  * Fixed bug which caused the node list to stop updating
-  * Fixed bug where "last used node" might match a different node
+## Colour blocks
 
-* `v1.6`
-  * Search string starting with space disables non-consecutive searching
-  * Exposes menu items in `nuke.menu("Nuke")` (File menu, etc.)
+Each result row is tinted with the node's tile colour as defined in Nuke:
 
-* `v1.5`
-  * Window closes properly
+- The left column shows a solid colour block at full opacity (the node's tile colour).
+- The row background receives a semi-transparent wash of the same colour (~31% opacity).
+- Text colour adjusts automatically for legibility (dark text on bright backgrounds, light text on dark backgrounds).
 
-* `v1.4`
-  * Blocks Nuke UI when active
-  * Up/down arrow keys cycle correctly
-  * Node weights now actually indicated (not always green)
+Nodes whose tile colour is the Nuke global default (no class-specific colour) are shown without colour blocks.
 
-* `v1.3`
-  * Created node remains selected between tabs ("tabtab" recreates previous node)
-  * Clicking a node creates it
-  * Window stays on screen near edges
+---
 
-* `v1.2`
-  * Window appears under cursor
+## Compatibility
 
-* `v1.1`
-  * Node weights are saved
+- **Nuke 13 and later** (PySide2)
+- **Nuke 15 and later** (PySide6)
 
-* `v1.0`
-  * Initial release
+Both Qt bindings are supported. The correct one is selected automatically at import time.
