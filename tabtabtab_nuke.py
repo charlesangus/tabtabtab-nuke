@@ -8,6 +8,7 @@ except ImportError:
     from PySide2 import QtGui
 
 from tabtabtab_nuke_core import TabTabTabPlugin, launch
+import tabtabtab_prefs
 
 
 def _extract_node_class_from_script(script_text):
@@ -158,7 +159,14 @@ else:
 def registerNukeAction():
     menu = _getParentMenu()
     if menu.findItem("Tabtabtab") is None:
-        menu.addCommand("Tabtabtab", lambda: launch(_plugin), "Tab")
+        menu.addCommand(
+            "Tabtabtab",
+            lambda: launch(
+                _plugin,
+                space_mode_order=tabtabtab_prefs.prefs_singleton.get("space_mode_order"),
+            ),
+            "Tab",
+        )
 
 
 def unregisterNukeAction():
