@@ -7,7 +7,7 @@ try:
 except ImportError:
     from PySide2 import QtGui
 
-from tabtabtab_nuke_core import TabTabTabPlugin, launch
+from tabtabtab_nuke_core import TabTabTabPlugin, launch, schedule_preload
 import tabtabtab_prefs
 
 
@@ -25,6 +25,37 @@ def _extract_node_class_from_script(script_text):
     if match:
         return match.group(1)
     return None
+
+
+def _menu_fingerprint(menu, depth=2):
+    """Cheap fingerprint of a Nuke menu using only item names.
+
+    Used to detect whether a full re-walk via _find_nuke_menu_items is
+    needed. Calling .name() on items is essentially free; .script() and
+    .shortcut() (the expensive calls) are deliberately avoided here.
+
+    Recurses `depth` levels so common gizmo / menu installs are detected
+    without paying for a full traversal. Deep additions buried below the
+    fingerprint depth (e.g. a new ToolSet several levels in) are missed
+    by this fast-path check, but the belt-and-suspenders refresh in
+    TabTabTabWidget._refresh_after_close calls invalidate_cache() on
+    every popup close, so deep changes are still picked up — at most
+    one stale popup behind any given mid-session change.
+    """
+    parts = []
+    try:
+        for item in menu.items():
+            name = item.name()
+            if isinstance(item, nuke.Menu):
+                if depth > 1:
+                    parts.append(("M", name, _menu_fingerprint(item, depth - 1)))
+                else:
+                    parts.append(("M", name))
+            else:
+                parts.append(("I", name))
+    except Exception:
+        return None
+    return tuple(parts)
 
 
 def _find_nuke_menu_items(menu, _path=None, is_node=True):
@@ -92,8 +123,34 @@ def _find_nuke_menu_items(menu, _path=None, is_node=True):
 class NukePlugin(TabTabTabPlugin):
     def __init__(self):
         self._menuobj_metadata = {}  # id(menuobj) -> {is_node, actual_class}
+        self._cached_items = None
+        self._cached_menu_fingerprint = None
+        # actual_class -> (left_color, text_color) tuple
+        self._color_cache = {}
 
     def get_items(self):
+        """Return all menu items, using a cached result if menus haven't
+        changed since the last walk.
+
+        Walks both Nodes and Nuke menus only when a cheap fingerprint of
+        those menus differs from the last walk, or when invalidate_cache()
+        has been called. The expensive part of the walk is the .script()
+        and .shortcut() calls inside _find_nuke_menu_items; the fingerprint
+        avoids them entirely so the staleness check is essentially free.
+
+        Belt-and-suspenders against fingerprint blind spots: TabTabTabWidget
+        calls invalidate_cache() after every popup close, so deeply nested
+        menu changes that the shallow fingerprint can't sample are still
+        picked up at most one popup later.
+        """
+        fingerprint = (
+            _menu_fingerprint(nuke.menu("Nodes")),
+            _menu_fingerprint(nuke.menu("Nuke")),
+        )
+        if (self._cached_items is not None
+                and self._cached_menu_fingerprint == fingerprint):
+            return self._cached_items
+
         self._menuobj_metadata = {}
         node_items = _find_nuke_menu_items(nuke.menu("Nodes"), is_node=True)
         menu_items = _find_nuke_menu_items(nuke.menu("Nuke"), is_node=False)
@@ -103,7 +160,25 @@ class NukePlugin(TabTabTabPlugin):
                 'is_node': item['is_node'],
                 'actual_class': item['actual_class'],
             }
+        self._cached_items = all_items
+        self._cached_menu_fingerprint = fingerprint
+        # Menu set changed (or first walk) — drop colour cache too in case
+        # new node classes appeared. Independent invalidation of the colour
+        # cache for default-colour preference edits happens via
+        # invalidate_cache() called from TabTabTabWidget._refresh_after_close.
+        self._color_cache = {}
         return all_items
+
+    def invalidate_cache(self):
+        """Drop the items + fingerprint cache and the per-class colour
+        cache. Called by TabTabTabWidget._refresh_after_close after every
+        popup close so the next get_items() walks fresh data, regardless
+        of whether the shallow menu fingerprint would have caught the
+        change. Also clears colour memoisation so default-node-colour
+        preference edits show up on the next open."""
+        self._cached_items = None
+        self._cached_menu_fingerprint = None
+        self._color_cache = {}
 
     def get_weights_file(self):
         return os.path.expanduser("~/.nuke/tabtabtab_weights.json")
@@ -127,25 +202,32 @@ class NukePlugin(TabTabTabPlugin):
         if not metadata.get('is_node', False):
             return (None, None)
         actual_class = metadata.get('actual_class', menuobj.name())
+        cached = self._color_cache.get(actual_class)
+        if cached is not None:
+            return cached
         try:
             packed_color = nuke.defaultNodeColor(actual_class)
             if packed_color == 0:
-                return (None, None)
-            # Skip nodes whose colour comes from the global preference default
-            # rather than a class-specific setting.  We detect this by comparing
-            # against what Nuke returns for a class name that cannot exist.
-            global_default_color = nuke.defaultNodeColor("__tabtabtab_sentinel__")
-            if packed_color == global_default_color:
-                return (None, None)
-            r = (packed_color >> 24) & 0xFF
-            g = (packed_color >> 16) & 0xFF
-            b = (packed_color >> 8) & 0xFF
-            # Use the un-dimmed tile colour as the left-block background (drawn
-            # behind the icon) and as the text-area tint.
-            tile_color = QtGui.QColor(r, g, b)
-            return (tile_color, tile_color)
+                result = (None, None)
+            else:
+                # Skip nodes whose colour comes from the global preference default
+                # rather than a class-specific setting.  We detect this by comparing
+                # against what Nuke returns for a class name that cannot exist.
+                global_default_color = nuke.defaultNodeColor("__tabtabtab_sentinel__")
+                if packed_color == global_default_color:
+                    result = (None, None)
+                else:
+                    r = (packed_color >> 24) & 0xFF
+                    g = (packed_color >> 16) & 0xFF
+                    b = (packed_color >> 8) & 0xFF
+                    # Use the un-dimmed tile colour as the left-block background
+                    # (drawn behind the icon) and as the text-area tint.
+                    tile_color = QtGui.QColor(r, g, b)
+                    result = (tile_color, tile_color)
         except Exception:
-            return (None, None)
+            result = (None, None)
+        self._color_cache[actual_class] = result
+        return result
 
 
 _plugin = NukePlugin()
@@ -167,6 +249,16 @@ def registerNukeAction():
             ),
             "Tab",
         )
+
+    # Eagerly construct the popup widget so the first user invocation hits
+    # the warm reuse path inside launch() instead of paying ~30-50ms of
+    # __init__ work (menu walk + initial NodeModel build). Deferred via
+    # singleShot(0) so Nuke finishes populating its menus first.
+    try:
+        startup_space_mode_order = tabtabtab_prefs.prefs_singleton.get("space_mode_order")
+    except Exception:
+        startup_space_mode_order = None
+    schedule_preload(_plugin, space_mode_order=startup_space_mode_order)
 
 
 def unregisterNukeAction():
