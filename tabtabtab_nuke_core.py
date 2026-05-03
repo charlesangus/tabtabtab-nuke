@@ -712,41 +712,62 @@ class TabTabTabWidget(QtWidgets.QDialog):
         create previously created node (instead of the most popular)
         """
 
-        # Hot path. Stays small so the line-edit is ready to receive input
-        # immediately, with no deferred work that could race against the
-        # user's first keystrokes / arrow-key navigation / a fast [Tab][Tab].
-        # Refresh work happens in close() instead — see _refresh_after_close.
+        # Show the widget and focus the input *before* doing any heavy work.
+        # Reloading weights from disk and re-walking the host application's
+        # menus can take 100-400ms; if those run synchronously here, queued
+        # KeyPress events arrive before the line-edit is ready and the user's
+        # first character or two get lost (issue #3). Deferring via
+        # singleShot(0) lets Qt drain pending input events into the now-
+        # focused line-edit before the refresh blocks the GUI thread again.
         self.input.selectAll()
         super(TabTabTabWidget, self).show()
         self.input.setFocus()
 
-    def close(self):
-        """Save weights, close the dialog, and schedule a background refresh.
+        QtCore.QTimer.singleShot(0, self._refresh_after_show)
 
-        Doing the refresh after close (instead of before show) keeps the
-        next open instantaneous: by the time the user reopens the popup,
-        weights, plugin items, and per-class colours are already up to
-        date. The cost is at most one stale popup between any change
-        (gizmo install, default-colour edit, weights modified by another
-        host instance) and the *next* close that happens after it. Adding
-        nodes / menu items mid-session is rare enough that this is an
-        acceptable trade for the responsiveness gain on every open.
+    def _refresh_after_show(self):
+        """Reload weights and refresh items from the plugin.
+
+        Runs on the next event-loop tick after show() so the user's first
+        keystrokes land in the line-edit even though this work is slow.
+        """
+        # Load the weights everytime the panel is shown, to prevent
+        # overwritting weights from other instances
+        self.weights.load()
+
+        # Refresh items from the plugin so additions/removals are reflected
+        self.things_model.refresh_items(self.plugin.get_items())
+
+        # Restore selection to the first item, since modelReset clears it
+        self.move_selection(where="first")
+
+    def close(self):
+        """Save weights, close the dialog, and schedule a belt-and-suspenders
+        cache invalidation + refresh.
+
+        The refresh on show() is the primary freshness mechanism — it walks
+        the plugin's items every open via _refresh_after_show, using the
+        plugin's own cache to skip the walk when nothing has changed. That's
+        adequate for hosts whose indexed items rarely change at runtime
+        (e.g. Nuke's node menus). For hosts where the indexed set changes
+        often during a session (e.g. tabtabtab_anchors indexing live nodes
+        in the script), or where the plugin's cache-validity check might
+        miss something (e.g. a deeply nested submenu install that a shallow
+        fingerprint doesn't sample), this hook ensures the cache is forcibly
+        invalidated and rewalked between every close and the next open.
         """
         self.weights.save()
         super(TabTabTabWidget, self).close()
         QtCore.QTimer.singleShot(0, self._refresh_after_close)
 
     def _refresh_after_close(self):
-        """Background refresh: invalidate plugin cache, reload weights,
-        rebuild the model. Skips itself if the user has reopened the popup
-        in the gap between close() and this firing — refreshing a visible
-        widget would briefly clear selection and disrupt the active
-        session, and any staleness will be caught on the next close.
+        """Force a cache invalidation and a fresh walk in the background
+        after the popup closes. No-op if the user has already reopened the
+        popup before this fires — the show-time refresh will handle it.
         """
         if self.isVisible():
             return
         self.plugin.invalidate_cache()
-        self.weights.load()
         self.things_model.refresh_items(self.plugin.get_items())
 
     def create(self):
