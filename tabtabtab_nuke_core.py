@@ -17,6 +17,20 @@ except ImportError:
     from PySide2.QtCore import Qt
 
 
+# Search mode identifiers used by the space-prefix mapping preference.
+MODE_ANCHORED_FUZZY = "anchored_fuzzy"
+MODE_NON_ANCHORED_FUZZY = "non_anchored_fuzzy"
+MODE_CONSECUTIVE = "consecutive"
+
+VALID_MODES = {MODE_ANCHORED_FUZZY, MODE_NON_ANCHORED_FUZZY, MODE_CONSECUTIVE}
+
+DEFAULT_SPACE_MODE_ORDER = [
+    MODE_ANCHORED_FUZZY,       # 0 spaces (default)
+    MODE_NON_ANCHORED_FUZZY,   # 1 space
+    MODE_CONSECUTIVE,          # 2 spaces
+]
+
+
 class TabTabTabPlugin:
     def get_items(self):
         """Return list of {'menuobj': ..., 'menupath': str} dicts."""
@@ -281,7 +295,7 @@ class NodeWeights(object):
 
 
 class NodeModel(QtCore.QAbstractListModel):
-    def __init__(self, mlist, weights, num_items=18, filtertext="", icon_fn=None, color_fn=None):
+    def __init__(self, mlist, weights, num_items=18, filtertext="", icon_fn=None, color_fn=None, space_mode_order=None):
         super(NodeModel, self).__init__()
 
         self.weights = weights
@@ -291,6 +305,13 @@ class NodeModel(QtCore.QAbstractListModel):
         self._filtertext = filtertext
         self._icon_fn = icon_fn if icon_fn is not None else (lambda obj: None)
         self._color_fn = color_fn if color_fn is not None else (lambda obj: (None, None))
+
+        if (space_mode_order is not None
+                and len(space_mode_order) == len(DEFAULT_SPACE_MODE_ORDER)
+                and all(m in VALID_MODES for m in space_mode_order)):
+            self._space_mode_order = list(space_mode_order)
+        else:
+            self._space_mode_order = list(DEFAULT_SPACE_MODE_ORDER)
 
         # _items is the list of objects to be shown, update sets this
         self._items = []
@@ -311,22 +332,34 @@ class NodeModel(QtCore.QAbstractListModel):
         force_non_anchored = False
         force_consecutive = False
 
-        # Two leading spaces: non-fuzzy (consecutive substring) search, non-anchored
+        # Determine space-prefix level (0, 1, or 2 leading spaces)
         if filtertext.startswith('  '):
-            anchored = False
-            force_consecutive = True
+            space_level = 2
             filtertext = filtertext[2:]
-        # One leading space: non-anchored fuzzy search
         elif filtertext.startswith(' '):
-            anchored = False
+            space_level = 1
             filtertext = filtertext[1:]
         # * or [ prefix: non-anchored fuzzy (legacy shortcuts, unchanged)
         elif filtertext.startswith('*') or filtertext.startswith('['):
+            space_level = None
             anchored = False
             filtertext = filtertext.replace("*", "", 1)
             if filtertext.startswith('*'):
                 force_non_anchored = True
             filtertext = filtertext.replace("*", "")
+        else:
+            space_level = 0
+
+        # Apply mode from the configurable space-prefix mapping
+        if space_level is not None:
+            mode = self._space_mode_order[space_level]
+            if mode == MODE_ANCHORED_FUZZY:
+                anchored = True
+            elif mode == MODE_NON_ANCHORED_FUZZY:
+                anchored = False
+            elif mode == MODE_CONSECUTIVE:
+                anchored = False
+                force_consecutive = True
 
         scored_a = []
         scored_b = []
@@ -525,7 +558,7 @@ class _ItemDelegate(QtWidgets.QStyledItemDelegate):
 
 
 class TabTabTabWidget(QtWidgets.QDialog):
-    def __init__(self, plugin, parent=None, winflags=None):
+    def __init__(self, plugin, parent=None, winflags=None, space_mode_order=None):
         super(TabTabTabWidget, self).__init__(parent=parent)
         if winflags is not None:
             self.setWindowFlags(winflags)
@@ -542,7 +575,7 @@ class TabTabTabWidget(QtWidgets.QDialog):
         items = plugin.get_items()
 
         # List of stuff, and associated model
-        self.things_model = NodeModel(items, weights=self.weights, icon_fn=plugin.get_icon, color_fn=plugin.get_color)
+        self.things_model = NodeModel(items, weights=self.weights, icon_fn=plugin.get_icon, color_fn=plugin.get_color, space_mode_order=space_mode_order)
         self.things = QtWidgets.QListView()
         self.things.setModel(self.things_model)
         self.things.setUniformItemSizes(True)
@@ -717,7 +750,7 @@ class TabTabTabWidget(QtWidgets.QDialog):
 _tabtabtab_instance = None
 
 
-def launch(plugin):
+def launch(plugin, space_mode_order=None):
     global _tabtabtab_instance
 
     if _tabtabtab_instance is not None:
@@ -726,6 +759,12 @@ def launch(plugin):
         # function and disappers instantly. This seems like a
         # reasonable "workaround"
         try:
+            # Update space mode order on reuse so pref changes take
+            # effect without restarting the host application.
+            if (space_mode_order is not None
+                    and len(space_mode_order) == len(DEFAULT_SPACE_MODE_ORDER)
+                    and all(m in VALID_MODES for m in space_mode_order)):
+                _tabtabtab_instance.things_model._space_mode_order = list(space_mode_order)
             _tabtabtab_instance.under_cursor()
             _tabtabtab_instance.show()
             _tabtabtab_instance.raise_()
@@ -733,7 +772,7 @@ def launch(plugin):
         except ReferenceError:
             _tabtabtab_instance = None
 
-    t = TabTabTabWidget(plugin, winflags=Qt.FramelessWindowHint)
+    t = TabTabTabWidget(plugin, winflags=Qt.FramelessWindowHint, space_mode_order=space_mode_order)
 
     # Make dialog appear under cursor, as Nuke's builtin one does
     t.under_cursor()

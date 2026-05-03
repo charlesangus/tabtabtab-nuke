@@ -5,6 +5,7 @@ PREFS_FILE = os.path.join(os.path.expanduser("~"), ".nuke", "tabtabtab_prefs.jso
 
 DEFAULTS = {
     "tabtabtab_enabled": True,
+    "space_mode_order": ["anchored_fuzzy", "non_anchored_fuzzy", "consecutive"],
 }
 
 
