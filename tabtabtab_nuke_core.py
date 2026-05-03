@@ -702,6 +702,25 @@ class TabTabTabWidget(QtWidgets.QDialog):
         create previously created node (instead of the most popular)
         """
 
+        # Show the widget and focus the input *before* doing any heavy work.
+        # Reloading weights from disk and re-walking the host application's
+        # menus can take 100-400ms; if those run synchronously here, queued
+        # KeyPress events arrive before the line-edit is ready and the user's
+        # first character or two get lost (issue #3). Deferring via
+        # singleShot(0) lets Qt drain pending input events into the now-
+        # focused line-edit before the refresh blocks the GUI thread again.
+        self.input.selectAll()
+        super(TabTabTabWidget, self).show()
+        self.input.setFocus()
+
+        QtCore.QTimer.singleShot(0, self._refresh_after_show)
+
+    def _refresh_after_show(self):
+        """Reload weights and refresh items from the plugin.
+
+        Runs on the next event-loop tick after show() so the user's first
+        keystrokes land in the line-edit even though this work is slow.
+        """
         # Load the weights everytime the panel is shown, to prevent
         # overwritting weights from other instances
         self.weights.load()
@@ -711,12 +730,6 @@ class TabTabTabWidget(QtWidgets.QDialog):
 
         # Restore selection to the first item, since modelReset clears it
         self.move_selection(where="first")
-
-        # Select all text to allow overwriting
-        self.input.selectAll()
-        self.input.setFocus()
-
-        super(TabTabTabWidget, self).show()
 
     def close(self):
         """Save weights when closing"""
