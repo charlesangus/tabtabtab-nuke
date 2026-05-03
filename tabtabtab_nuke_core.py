@@ -307,7 +307,7 @@ class NodeModel(QtCore.QAbstractListModel):
         self._color_fn = color_fn if color_fn is not None else (lambda obj: (None, None))
 
         if (space_mode_order is not None
-                and len(space_mode_order) == 3
+                and len(space_mode_order) == len(DEFAULT_SPACE_MODE_ORDER)
                 and all(m in VALID_MODES for m in space_mode_order)):
             self._space_mode_order = list(space_mode_order)
         else:
@@ -762,7 +762,7 @@ def launch(plugin, space_mode_order=None):
             # Update space mode order on reuse so pref changes take
             # effect without restarting the host application.
             if (space_mode_order is not None
-                    and len(space_mode_order) == 3
+                    and len(space_mode_order) == len(DEFAULT_SPACE_MODE_ORDER)
                     and all(m in VALID_MODES for m in space_mode_order)):
                 _tabtabtab_instance.things_model._space_mode_order = list(space_mode_order)
             _tabtabtab_instance.under_cursor()
