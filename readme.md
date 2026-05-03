@@ -71,8 +71,10 @@ Non-anchored search (leading space) — matches letters anywhere in the name:
 
 ## Search modes
 
-| Prefix | Behaviour |
-|--------|-----------|
+The table below shows the **default** space-prefix → mode mapping. The mapping is configurable; see [Preferences](#preferences) to remap which mode is triggered by each space level.
+
+| Prefix | Default behaviour |
+|--------|-------------------|
 | (none) | Anchored fuzzy match. Each character of your query must appear in order, starting from the beginning of the node name. "blr" matches "Blur" but not "ColorBurn". |
 | one space | Non-anchored fuzzy match. Characters must appear in order anywhere in the name. " blr" matches both "Blur" and "ColorBurn". |
 | two spaces | Non-anchored consecutive substring. The exact run of letters must appear somewhere in the name. "   blur" matches "MotionBlur" but not "Blur2". |
@@ -121,6 +123,8 @@ Ctrl+Tab still opens Nuke's built-in tab menu.
 Open **Edit > Tabtabtab Preferences...** to access the preferences dialog.
 
 - **Enable tabtabtab** — uncheck to disable the plugin and restore Nuke's default Tab behaviour. Changes take effect immediately without restarting Nuke.
+
+- **Space-prefix search modes** — assign which search mode is triggered by zero, one, or two leading spaces. Each of the three modes (Anchored fuzzy, Non-anchored fuzzy, Consecutive substring) must be assigned to exactly one space level. Defaults match the [Search modes](#search-modes) table above.
 
 ---
 
