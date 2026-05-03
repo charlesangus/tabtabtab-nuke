@@ -1,15 +1,28 @@
-from PySide6.QtWidgets import (
-    QCheckBox,
-    QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QFormLayout,
-    QGroupBox,
-    QMessageBox,
-    QVBoxLayout,
-)
+try:
+    from PySide6.QtWidgets import (
+        QCheckBox,
+        QComboBox,
+        QDialog,
+        QDialogButtonBox,
+        QFormLayout,
+        QGroupBox,
+        QMessageBox,
+        QVBoxLayout,
+    )
+except ImportError:
+    from PySide2.QtWidgets import (
+        QCheckBox,
+        QComboBox,
+        QDialog,
+        QDialogButtonBox,
+        QFormLayout,
+        QGroupBox,
+        QMessageBox,
+        QVBoxLayout,
+    )
 
 import tabtabtab_nuke
+import tabtabtab_nuke_core
 import tabtabtab_prefs
 
 
@@ -38,11 +51,11 @@ class TabtabtabPrefsDialog(QDialog):
         mode_group.setLayout(mode_layout)
 
         mode_labels = {
-            "anchored_fuzzy": "Anchored fuzzy",
-            "non_anchored_fuzzy": "Non-anchored fuzzy",
-            "consecutive": "Consecutive substring",
+            tabtabtab_nuke_core.MODE_ANCHORED_FUZZY: "Anchored fuzzy",
+            tabtabtab_nuke_core.MODE_NON_ANCHORED_FUZZY: "Non-anchored fuzzy",
+            tabtabtab_nuke_core.MODE_CONSECUTIVE: "Consecutive substring",
         }
-        all_modes = ["anchored_fuzzy", "non_anchored_fuzzy", "consecutive"]
+        all_modes = list(tabtabtab_nuke_core.DEFAULT_SPACE_MODE_ORDER)
 
         self._space_combos = []
         for space_label in ["No leading space:", "One leading space:", "Two leading spaces:"]:

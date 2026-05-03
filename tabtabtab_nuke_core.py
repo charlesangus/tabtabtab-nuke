@@ -761,7 +761,9 @@ def launch(plugin, space_mode_order=None):
         try:
             # Update space mode order on reuse so pref changes take
             # effect without restarting the host application.
-            if space_mode_order is not None:
+            if (space_mode_order is not None
+                    and len(space_mode_order) == 3
+                    and all(m in VALID_MODES for m in space_mode_order)):
                 _tabtabtab_instance.things_model._space_mode_order = list(space_mode_order)
             _tabtabtab_instance.under_cursor()
             _tabtabtab_instance.show()
