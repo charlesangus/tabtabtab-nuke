@@ -726,10 +726,18 @@ class TabTabTabWidget(QtWidgets.QDialog):
         QtCore.QTimer.singleShot(0, self._refresh_after_show)
 
     def _refresh_after_show(self):
-        """Reload weights and refresh items from the plugin.
+        """Cheap refresh: reload weights and render whatever the plugin's
+        cache currently has, so the user has results to look at and can
+        type immediately.
 
         Runs on the next event-loop tick after show() so the user's first
         keystrokes land in the line-edit even though this work is slow.
+
+        Schedules _refresh_fresh on the following tick to bound staleness:
+        the cache may be one step behind reality (a deep submenu install
+        the plugin's fingerprint can't sample, or a default-node-colour
+        preference edit), and waiting until close to refresh would leave
+        the user staring at stale data for the entire open session.
         """
         # Load the weights everytime the panel is shown, to prevent
         # overwritting weights from other instances
@@ -741,34 +749,34 @@ class TabTabTabWidget(QtWidgets.QDialog):
         # Restore selection to the first item, since modelReset clears it
         self.move_selection(where="first")
 
-    def close(self):
-        """Save weights, close the dialog, and schedule a belt-and-suspenders
-        cache invalidation + refresh.
+        # Schedule the expensive freshness pass after focus and the cheap
+        # render are settled. The user can already type; this catches any
+        # staleness the plugin's own cache check missed.
+        QtCore.QTimer.singleShot(0, self._refresh_fresh)
 
-        The refresh on show() is the primary freshness mechanism — it walks
-        the plugin's items every open via _refresh_after_show, using the
-        plugin's own cache to skip the walk when nothing has changed. That's
-        adequate for hosts whose indexed items rarely change at runtime
-        (e.g. Nuke's node menus). For hosts where the indexed set changes
-        often during a session (e.g. tabtabtab_anchors indexing live nodes
-        in the script), or where the plugin's cache-validity check might
-        miss something (e.g. a deeply nested submenu install that a shallow
-        fingerprint doesn't sample), this hook ensures the cache is forcibly
-        invalidated and rewalked between every close and the next open.
-        """
-        self.weights.save()
-        super(TabTabTabWidget, self).close()
-        QtCore.QTimer.singleShot(0, self._refresh_after_close)
+    def _refresh_fresh(self):
+        """Expensive refresh: force a full re-walk of the plugin's items,
+        bypassing whatever cache the cheap path used.
 
-    def _refresh_after_close(self):
-        """Force a cache invalidation and a fresh walk in the background
-        after the popup closes. No-op if the user has already reopened the
-        popup before this fires — the show-time refresh will handle it.
+        Runs one tick after _refresh_after_show. Bounds staleness to a
+        brief moment after open instead of an entire open/close cycle,
+        at the cost of a possible slight typing hitch while the walk
+        runs. No-op if the user already closed the popup before this
+        fires — the next open will repeat the same two-stage refresh.
         """
-        if self.isVisible():
+        if not self.isVisible():
             return
         self.plugin.invalidate_cache()
         self.things_model.refresh_items(self.plugin.get_items())
+        # refresh_items resets the model, which clears QListView selection;
+        # restore to the first match (works for both empty and filtered
+        # input — _filtertext is preserved across refresh_items).
+        self.move_selection(where="first")
+
+    def close(self):
+        """Save weights and close the dialog."""
+        self.weights.save()
+        super(TabTabTabWidget, self).close()
 
     def create(self):
         # Get selected item
