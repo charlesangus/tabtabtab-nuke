@@ -761,10 +761,16 @@ class TabTabTabWidget(QtWidgets.QDialog):
 
 
 _tabtabtab_instance = None
+# Strong reference to a preloaded but never-yet-shown widget. Released on
+# first show() because Qt's window registry keeps shown top-level windows
+# alive and we want to revert to the original weakref-only lifetime
+# pattern (which avoids the on-exit segfault from
+# https://github.com/dbr/tabtabtab-nuke/issues/4) as soon as possible.
+_preloaded_instance = None
 
 
 def launch(plugin, space_mode_order=None):
-    global _tabtabtab_instance
+    global _tabtabtab_instance, _preloaded_instance
 
     if _tabtabtab_instance is not None:
         # TODO: Is there a better way of doing this? If a
@@ -781,9 +787,14 @@ def launch(plugin, space_mode_order=None):
             _tabtabtab_instance.under_cursor()
             _tabtabtab_instance.show()
             _tabtabtab_instance.raise_()
+            # Once the widget has been shown, Qt holds it alive via its
+            # window registry. Drop the preload strong reference so we
+            # match the original lifetime model from here on.
+            _preloaded_instance = None
             return
         except ReferenceError:
             _tabtabtab_instance = None
+            _preloaded_instance = None
 
     t = TabTabTabWidget(plugin, winflags=Qt.FramelessWindowHint, space_mode_order=space_mode_order)
 
@@ -799,3 +810,43 @@ def launch(plugin, space_mode_order=None):
     # https://github.com/dbr/tabtabtab-nuke/issues/4
     import weakref
     _tabtabtab_instance = weakref.proxy(t)
+
+
+def preload(plugin, space_mode_order=None):
+    """Eagerly construct the popup widget so the first user invocation hits
+    the warm reuse path inside launch().
+
+    Idempotent: returns immediately if an instance already exists (either
+    from a previous preload or because the user invoked the popup before
+    the deferred preload ran).
+
+    Construction is ~30-50ms (menu walk + initial NodeModel build). Running
+    that at host-plugin-load time blocks startup and may also race with
+    the host's own menu population, so prefer schedule_preload() which
+    defers via QTimer.singleShot(0, ...).
+    """
+    global _tabtabtab_instance, _preloaded_instance
+    if _tabtabtab_instance is not None:
+        return
+
+    t = TabTabTabWidget(plugin, winflags=Qt.FramelessWindowHint, space_mode_order=space_mode_order)
+    # Hold a strong reference until first show(); without this the proxy
+    # below would dangle the moment this function returns because Qt's
+    # window registry only tracks widgets that have been shown.
+    _preloaded_instance = t
+
+    import weakref
+    _tabtabtab_instance = weakref.proxy(t)
+
+
+def schedule_preload(plugin, space_mode_order=None):
+    """Defer preload() to the next event-loop tick.
+
+    Use this from the host's plugin entry point. Deferring guarantees
+    (a) that startup isn't blocked by widget construction and (b) that
+    the host's own menu population is complete before we walk it.
+    """
+    QtCore.QTimer.singleShot(
+        0,
+        lambda: preload(plugin, space_mode_order=space_mode_order),
+    )

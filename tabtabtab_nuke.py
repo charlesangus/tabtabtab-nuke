@@ -7,7 +7,7 @@ try:
 except ImportError:
     from PySide2 import QtGui
 
-from tabtabtab_nuke_core import TabTabTabPlugin, launch
+from tabtabtab_nuke_core import TabTabTabPlugin, launch, schedule_preload
 import tabtabtab_prefs
 
 
@@ -227,6 +227,16 @@ def registerNukeAction():
             ),
             "Tab",
         )
+
+    # Eagerly construct the popup widget so the first user invocation hits
+    # the warm reuse path inside launch() instead of paying ~30-50ms of
+    # __init__ work (menu walk + initial NodeModel build). Deferred via
+    # singleShot(0) so Nuke finishes populating its menus first.
+    try:
+        startup_space_mode_order = tabtabtab_prefs.prefs_singleton.get("space_mode_order")
+    except Exception:
+        startup_space_mode_order = None
+    schedule_preload(_plugin, space_mode_order=startup_space_mode_order)
 
 
 def unregisterNukeAction():
