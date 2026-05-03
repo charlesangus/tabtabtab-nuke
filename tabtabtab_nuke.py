@@ -27,34 +27,6 @@ def _extract_node_class_from_script(script_text):
     return None
 
 
-def _menu_fingerprint(menu, depth=2):
-    """Cheap fingerprint of a Nuke menu using only item names.
-
-    Used to detect whether a full re-walk via _find_nuke_menu_items is
-    needed. Calling .name() on items is essentially free; .script() and
-    .shortcut() (the expensive calls) are deliberately avoided here.
-
-    Recurses `depth` levels so common gizmo / menu installs are detected
-    without paying for a full traversal. Deep additions buried below the
-    fingerprint depth (e.g. a new ToolSet several levels in) are missed,
-    but those are rare mid-session and acceptable for a fast path.
-    """
-    parts = []
-    try:
-        for item in menu.items():
-            name = item.name()
-            if isinstance(item, nuke.Menu):
-                if depth > 1:
-                    parts.append(("M", name, _menu_fingerprint(item, depth - 1)))
-                else:
-                    parts.append(("M", name))
-            else:
-                parts.append(("I", name))
-    except Exception:
-        return None
-    return tuple(parts)
-
-
 def _find_nuke_menu_items(menu, _path=None, is_node=True):
     """Extracts items from a given Nuke menu
 
@@ -120,28 +92,22 @@ def _find_nuke_menu_items(menu, _path=None, is_node=True):
 class NukePlugin(TabTabTabPlugin):
     def __init__(self):
         self._menuobj_metadata = {}  # id(menuobj) -> {is_node, actual_class}
-        self._cached_items = None
-        self._cached_menu_fingerprint = None
-        # actual_class -> (left_color, text_color) tuple, cleared when items refresh
+        # actual_class -> (left_color, text_color) tuple. Cleared by
+        # invalidate_cache() so the after-close refresh picks up edits to
+        # Nuke's default node colour preferences.
         self._color_cache = {}
 
     def get_items(self):
-        """Return all menu items, using a cached result if menus haven't changed.
+        """Return all menu items via a fresh recursive walk.
 
-        Walks both Nodes and Nuke menus only when a cheap fingerprint of those
-        menus differs from the last walk. The expensive part of the walk is the
-        .script() and .shortcut() calls inside _find_nuke_menu_items; the
-        fingerprint avoids them entirely so the staleness check is essentially
-        free.
+        get_items() is now only called from TabTabTabWidget.__init__ (once at
+        construction) and TabTabTabWidget._refresh_after_close (background
+        refresh after each popup close), so paying for a fresh walk every
+        call is fine — the cost is never on the user's hot path. This also
+        sidesteps a class of cache-staleness bugs where deeply nested menu
+        changes (e.g. a new ToolSet several levels down) were invisible to
+        a top-level fingerprint check.
         """
-        fingerprint = (
-            _menu_fingerprint(nuke.menu("Nodes")),
-            _menu_fingerprint(nuke.menu("Nuke")),
-        )
-        if (self._cached_items is not None
-                and self._cached_menu_fingerprint == fingerprint):
-            return self._cached_items
-
         self._menuobj_metadata = {}
         node_items = _find_nuke_menu_items(nuke.menu("Nodes"), is_node=True)
         menu_items = _find_nuke_menu_items(nuke.menu("Nuke"), is_node=False)
@@ -151,12 +117,13 @@ class NukePlugin(TabTabTabPlugin):
                 'is_node': item['is_node'],
                 'actual_class': item['actual_class'],
             }
-        self._cached_items = all_items
-        self._cached_menu_fingerprint = fingerprint
-        # Menu set changed (or first walk) — drop color cache too in case new
-        # node classes appeared or default colors were edited.
-        self._color_cache = {}
         return all_items
+
+    def invalidate_cache(self):
+        """Drop per-class colour memoisation. Called after each popup close
+        so a default-node-colour edit (which doesn't affect get_items())
+        gets reflected on the next refresh."""
+        self._color_cache = {}
 
     def get_weights_file(self):
         return os.path.expanduser("~/.nuke/tabtabtab_weights.json")

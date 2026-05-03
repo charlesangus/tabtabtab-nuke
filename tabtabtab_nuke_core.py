@@ -66,6 +66,16 @@ class TabTabTabPlugin:
         """
         return (None, None)
 
+    def invalidate_cache(self):
+        """Optional hook called after the popup closes so the next get_items()
+        and get_color() return fresh data.
+
+        Override to drop any plugin-side caches (e.g., a recursive menu walk
+        or per-class colour memoisation). Default is a no-op for plugins that
+        don't cache.
+        """
+        pass
+
 
 def _normalize_qt_item_name(item):
     item_name = item.text()
@@ -702,39 +712,42 @@ class TabTabTabWidget(QtWidgets.QDialog):
         create previously created node (instead of the most popular)
         """
 
-        # Show the widget and focus the input *before* doing any heavy work.
-        # Reloading weights from disk and re-walking the host application's
-        # menus can take 100-400ms; if those run synchronously here, queued
-        # KeyPress events arrive before the line-edit is ready and the user's
-        # first character or two get lost (issue #3). Deferring via
-        # singleShot(0) lets Qt drain pending input events into the now-
-        # focused line-edit before the refresh blocks the GUI thread again.
+        # Hot path. Stays small so the line-edit is ready to receive input
+        # immediately, with no deferred work that could race against the
+        # user's first keystrokes / arrow-key navigation / a fast [Tab][Tab].
+        # Refresh work happens in close() instead — see _refresh_after_close.
         self.input.selectAll()
         super(TabTabTabWidget, self).show()
         self.input.setFocus()
 
-        QtCore.QTimer.singleShot(0, self._refresh_after_show)
-
-    def _refresh_after_show(self):
-        """Reload weights and refresh items from the plugin.
-
-        Runs on the next event-loop tick after show() so the user's first
-        keystrokes land in the line-edit even though this work is slow.
-        """
-        # Load the weights everytime the panel is shown, to prevent
-        # overwritting weights from other instances
-        self.weights.load()
-
-        # Refresh items from the plugin so additions/removals are reflected
-        self.things_model.refresh_items(self.plugin.get_items())
-
-        # Restore selection to the first item, since modelReset clears it
-        self.move_selection(where="first")
-
     def close(self):
-        """Save weights when closing"""
+        """Save weights, close the dialog, and schedule a background refresh.
+
+        Doing the refresh after close (instead of before show) keeps the
+        next open instantaneous: by the time the user reopens the popup,
+        weights, plugin items, and per-class colours are already up to
+        date. The cost is at most one stale popup between any change
+        (gizmo install, default-colour edit, weights modified by another
+        host instance) and the *next* close that happens after it. Adding
+        nodes / menu items mid-session is rare enough that this is an
+        acceptable trade for the responsiveness gain on every open.
+        """
         self.weights.save()
         super(TabTabTabWidget, self).close()
+        QtCore.QTimer.singleShot(0, self._refresh_after_close)
+
+    def _refresh_after_close(self):
+        """Background refresh: invalidate plugin cache, reload weights,
+        rebuild the model. Skips itself if the user has reopened the popup
+        in the gap between close() and this firing — refreshing a visible
+        widget would briefly clear selection and disrupt the active
+        session, and any staleness will be caught on the next close.
+        """
+        if self.isVisible():
+            return
+        self.plugin.invalidate_cache()
+        self.weights.load()
+        self.things_model.refresh_items(self.plugin.get_items())
 
     def create(self):
         # Get selected item
@@ -761,11 +774,12 @@ class TabTabTabWidget(QtWidgets.QDialog):
 
 
 _tabtabtab_instance = None
-# Strong reference to a preloaded but never-yet-shown widget. Released on
-# first show() because Qt's window registry keeps shown top-level windows
-# alive and we want to revert to the original weakref-only lifetime
-# pattern (which avoids the on-exit segfault from
-# https://github.com/dbr/tabtabtab-nuke/issues/4) as soon as possible.
+# Strong reference to a preloaded but never-yet-shown widget. Released
+# either on first show() (Qt's window registry takes over) or on
+# QApplication.aboutToQuit (whichever comes first), so the original
+# weakref-only lifetime pattern that avoids the on-exit segfault from
+# https://github.com/dbr/tabtabtab-nuke/issues/4 is restored before
+# host-application shutdown even if the user never opens the popup.
 _preloaded_instance = None
 
 
@@ -835,8 +849,28 @@ def preload(plugin, space_mode_order=None):
     # window registry only tracks widgets that have been shown.
     _preloaded_instance = t
 
+    # Defensively release the strong reference before the host application
+    # quits, even if the user never opens the popup. Holding an extra ref
+    # to the widget through Qt shutdown has caused segfaults historically
+    # (dbr/tabtabtab-nuke#4); aboutToQuit fires before Qt's cleanup pass,
+    # so dropping the ref here puts us back into the original weakref-
+    # only model in time.
+    app = QtWidgets.QApplication.instance()
+    if app is not None:
+        app.aboutToQuit.connect(_release_preloaded_instance)
+
     import weakref
     _tabtabtab_instance = weakref.proxy(t)
+
+
+def _release_preloaded_instance():
+    """aboutToQuit handler: drop strong + weak references to the preloaded
+    widget so Qt can tear it down without an extra Python reference
+    holding the wrapper alive past the C++ object's destruction.
+    """
+    global _preloaded_instance, _tabtabtab_instance
+    _preloaded_instance = None
+    _tabtabtab_instance = None
 
 
 def schedule_preload(plugin, space_mode_order=None):
