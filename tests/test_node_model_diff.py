@@ -283,33 +283,88 @@ def test_mixed_remove_insert_and_reorder_orders_removes_first():
     assert last_remove < first_struct_after_remove
 
 
-def test_off_window_churn_is_silent():
-    """Items past num_items aren't visible to Qt (rowCount caps), so
-    swapping them emits no row operations."""
+def test_input_past_num_items_is_equivalent_to_capped_input():
+    """new_items past num_items is dead storage — capping at entry
+    produces the same signal trace and same final state as if the
+    caller had pre-capped the list themselves."""
     module = _load_core()
+    full_input = [_row(letter) for letter in "EABCD"]
+
+    model_uncapped = _make_model(module, num_items=3, items=[_row(c) for c in "ABC"])
+    model_uncapped._apply_items(full_input)
+
+    model_capped = _make_model(module, num_items=3, items=[_row(c) for c in "ABC"])
+    model_capped._apply_items(full_input[:3])
+
+    assert model_uncapped.recorded_ops == model_capped.recorded_ops
+    assert (
+        [i["menupath"] for i in model_uncapped._items]
+        == [i["menupath"] for i in model_capped._items]
+    )
+
+
+def test_pre_existing_off_window_items_are_trimmed_silently():
+    """If self._items entered the call with items past num_items (legacy
+    state from an older capped-rowCount regime), those are silently
+    trimmed before any signal emission so the diff loop's first begin*
+    call sees a rowCount that matches reality."""
+    module = _load_core()
+    # Five items in storage, only three visible — same input as state.
     items = [_row(letter) for letter in "ABCDE"]
     model = _make_model(module, num_items=3, items=items)
 
-    # Visible window unchanged (A, B, C); off-window swapped D,E -> F,G.
-    model._apply_items([_row("A"), _row("B"), _row("C"), _row("F"), _row("G")])
+    model._apply_items([_row("A"), _row("B"), _row("C")])
 
     assert model.recorded_ops == []
-    assert [i["menupath"] for i in model._items] == ["A", "B", "C", "F", "G"]
+    assert [i["menupath"] for i in model._items] == ["A", "B", "C"]
 
 
-def test_off_window_item_promoted_into_window_emits_structural_ops():
-    """When something previously off-window enters the visible window,
-    that crossing must surface — otherwise the user wouldn't see the
-    new top-of-list item appear."""
+def test_self_items_consistent_at_end_of_each_pair():
+    """Qt contract: between begin* and end*, the model must mutate its
+    backing data so rowCount() reflects the post-operation count by the
+    time end* fires. An earlier version mutated a local slice copy and
+    only assigned to self._items at the very end of _apply_items, which
+    left rowCount() lying through every begin/end pair.
+
+    This test instruments the stub's end* methods to capture
+    len(model._items) at the moment each fires and asserts the captured
+    counts match the per-step expected sequence — proving the mutation
+    is propagating to self._items in step with the signals.
+    """
     module = _load_core()
-    items = [_row(letter) for letter in "ABCDE"]
-    model = _make_model(module, num_items=3, items=items)
+    model = _make_model(module, items=[_row("A"), _row("B"), _row("C")])
 
-    # E was off-window (position 4); now it's at position 0.
-    # Visible window must shift from [A, B, C] to [E, A, B].
-    model._apply_items([_row("E"), _row("A"), _row("B"), _row("C"), _row("D")])
+    snapshots = []
+    original_end_remove = type(model).endRemoveRows
+    original_end_insert = type(model).endInsertRows
+    original_end_move = type(model).endMoveRows
 
-    op_kinds = [op[0] for op in model.recorded_ops]
-    assert "begin_insert" in op_kinds  # E entering the window
-    assert "begin_remove" in op_kinds  # C leaving the window
-    assert [i["menupath"] for i in model._items[:3]] == ["E", "A", "B"]
+    def capturing_end_remove(self):
+        snapshots.append(("end_remove", len(self._items)))
+        original_end_remove(self)
+
+    def capturing_end_insert(self):
+        snapshots.append(("end_insert", len(self._items)))
+        original_end_insert(self)
+
+    def capturing_end_move(self):
+        snapshots.append(("end_move", len(self._items)))
+        original_end_move(self)
+
+    model.endRemoveRows = capturing_end_remove.__get__(model, type(model))
+    model.endInsertRows = capturing_end_insert.__get__(model, type(model))
+    model.endMoveRows = capturing_end_move.__get__(model, type(model))
+
+    # Old: A B C (len 3). New: D A (B and C removed, D inserted at top).
+    # Expected snapshots in order:
+    #   end_remove → len 2 (C gone)
+    #   end_remove → len 1 (B gone)
+    #   end_insert → len 2 (D inserted at 0; A still at what's now 1)
+    model._apply_items([_row("D"), _row("A")])
+
+    assert snapshots == [
+        ("end_remove", 2),
+        ("end_remove", 1),
+        ("end_insert", 2),
+    ]
+    assert [i["menupath"] for i in model._items] == ["D", "A"]
