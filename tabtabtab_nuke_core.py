@@ -414,11 +414,112 @@ class NodeModel(QtCore.QAbstractListModel):
         sort_b = sorted(scored_b, key=lambda k: (-k['score'], k['text']))
         s = sort_a + sort_b
 
-        self._items = s
-        self.modelReset.emit()
+        self._apply_items(s)
+
+    def _apply_items(self, new_items):
+        """Replace visible items via minimal row operations instead of a
+        full modelReset.
+
+        Mutates self._items in place between every begin*/end* pair so
+        rowCount() reflects the post-mutation state by the time end* is
+        called — that's the Qt contract. An earlier version mutated a
+        local slice copy, leaving self._items stale through the whole
+        run; views querying mid-emission saw inconsistent state.
+
+        Diff is keyed on `menupath` (each item's stable identity).
+        new_items is capped at num_items at entry; everything past that
+        is dead storage (data()/getorig() never read past rowCount, and
+        update() rebuilds from self._all so off-window retention buys
+        nothing). rowCount() now returns len(self._items) directly.
+
+        Why this matters: the deferred refresh on popup show ran
+        modelReset twice (cheap pass + fresh re-walk), blanking the
+        view and clearing selection. Row ops keep the view stable —
+        the user sees the previous open's items immediately and they
+        morph into current as the timers tick.
+        """
+        parent = QtCore.QModelIndex()
+        n = self.num_items
+        # Cap both lists at the visible window. self._items may have
+        # been longer under the previous (capped-rowCount) regime; trim
+        # silently before any signal emission so the diff loop's first
+        # begin* call sees a consistent rowCount.
+        if len(self._items) > n:
+            del self._items[n:]
+        new_items = new_items[:n]
+
+        new_key_set = {item['menupath'] for item in new_items}
+
+        # Remove rows whose key is no longer present, walking back-to-
+        # front so earlier indices stay valid as we delete.
+        for i in range(len(self._items) - 1, -1, -1):
+            if self._items[i]['menupath'] not in new_key_set:
+                self.beginRemoveRows(parent, i, i)
+                del self._items[i]
+                self.endRemoveRows()
+
+        # Walk the target order. At each position, ensure the right row
+        # is present — moving an existing one up, or inserting a new one.
+        for target_pos, new_item in enumerate(new_items):
+            key = new_item['menupath']
+
+            if (target_pos < len(self._items)
+                    and self._items[target_pos]['menupath'] == key):
+                if not self._row_visually_equal(self._items[target_pos], new_item):
+                    self._items[target_pos] = new_item
+                    idx = self.index(target_pos)
+                    self.dataChanged.emit(idx, idx)
+                continue
+
+            source_pos = None
+            for j in range(target_pos + 1, len(self._items)):
+                if self._items[j]['menupath'] == key:
+                    source_pos = j
+                    break
+
+            if source_pos is not None:
+                # source_pos > target_pos always here, so destinationChild
+                # = target_pos is a valid move (Qt rejects no-op moves
+                # where dest == source or source + 1). beginMoveRows
+                # returns False if Qt rejects anyway; fall back to
+                # remove+insert so we never run endMoveRows against a
+                # rejected begin.
+                moved = self.beginMoveRows(
+                    parent, source_pos, source_pos, parent, target_pos
+                )
+                if moved:
+                    self._items.insert(target_pos, self._items.pop(source_pos))
+                    self.endMoveRows()
+                    if not self._row_visually_equal(self._items[target_pos], new_item):
+                        self._items[target_pos] = new_item
+                        idx = self.index(target_pos)
+                        self.dataChanged.emit(idx, idx)
+                else:
+                    self.beginRemoveRows(parent, source_pos, source_pos)
+                    del self._items[source_pos]
+                    self.endRemoveRows()
+                    self.beginInsertRows(parent, target_pos, target_pos)
+                    self._items.insert(target_pos, new_item)
+                    self.endInsertRows()
+            else:
+                self.beginInsertRows(parent, target_pos, target_pos)
+                self._items.insert(target_pos, new_item)
+                self.endInsertRows()
+
+    @staticmethod
+    def _row_visually_equal(old_row, new_row):
+        """True if two rows would render identically. Compares only the
+        fields the delegate reads — skipping `menuobj` (host handle,
+        identity comparison is unreliable) and `menupath` (already
+        matched by caller)."""
+        return (
+            old_row.get('display_text') == new_row.get('display_text')
+            and old_row.get('score') == new_row.get('score')
+            and old_row.get('color') == new_row.get('color')
+        )
 
     def rowCount(self, parent=QtCore.QModelIndex()):
-        return min(self.num_items, len(self._items))
+        return len(self._items)
 
     def data(self, index, role=Qt.DisplayRole):
         if role == Qt.DisplayRole:
@@ -719,6 +820,12 @@ class TabTabTabWidget(QtWidgets.QDialog):
         # first character or two get lost (issue #3). Deferring via
         # singleShot(0) lets Qt drain pending input events into the now-
         # focused line-edit before the refresh blocks the GUI thread again.
+        #
+        # The popup's previous-open items remain in NodeModel between
+        # close and re-open. Now that NodeModel emits row ops instead of
+        # modelReset, the deferred refreshes morph that retained state
+        # incrementally — no blank flash between show() and the first
+        # tick, and no jump when the second tick fires.
         self.input.selectAll()
         super(TabTabTabWidget, self).show()
         self.input.setFocus()
@@ -743,10 +850,13 @@ class TabTabTabWidget(QtWidgets.QDialog):
         # overwritting weights from other instances
         self.weights.load()
 
-        # Refresh items from the plugin so additions/removals are reflected
+        # Refresh items from the plugin so additions/removals are reflected.
+        # NodeModel emits row ops, so this pass quietly morphs the retained
+        # previous-open state into current results without blanking the view.
         self.things_model.refresh_items(self.plugin.get_items())
 
-        # Restore selection to the first item, since modelReset clears it
+        # Restore selection to the first item; row ops preserve selection
+        # in general, but a previously-selected row may no longer exist.
         self.move_selection(where="first")
 
         # Schedule the expensive freshness pass after focus and the cheap
@@ -763,14 +873,15 @@ class TabTabTabWidget(QtWidgets.QDialog):
         at the cost of a possible slight typing hitch while the walk
         runs. No-op if the user already closed the popup before this
         fires — the next open will repeat the same two-stage refresh.
+
+        NodeModel emits row ops rather than modelReset, so this pass is
+        visually quiet when nothing changed: only rows that genuinely
+        differ get touched.
         """
         if not self.isVisible():
             return
         self.plugin.invalidate_cache()
         self.things_model.refresh_items(self.plugin.get_items())
-        # refresh_items resets the model, which clears QListView selection;
-        # restore to the first match (works for both empty and filtered
-        # input — _filtertext is preserved across refresh_items).
         self.move_selection(where="first")
 
     def close(self):
