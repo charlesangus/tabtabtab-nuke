@@ -853,6 +853,49 @@ def _clear_tabtabtab_instance(*_args):
     _tabtabtab_instance = None
 
 
+# Retry budget for preload-only re-parenting. Plugin-load typically runs
+# before Nuke's main window is registered in topLevelWidgets(), but the
+# main window appears within a second or two; ~10s of retries is enough
+# without spinning indefinitely if something genuinely went wrong.
+_REPARENT_RETRY_INTERVAL_MS = 500
+_REPARENT_RETRY_MAX_ATTEMPTS = 20
+
+
+def _try_reparent_preloaded(widget, attempts_remaining):
+    """Re-parent a parentless preloaded `widget` to Nuke's main window;
+    retry on a timer if the main window isn't in topLevelWidgets() yet.
+
+    Used from preload() to recover when preload runs before the main
+    window has been created. Without this, a session in which the user
+    never invokes the popup leaves the cached instance parentless for
+    the rest of the session — silently losing the parent-owned lifetime
+    that prevents the dbr/tabtabtab-nuke#4 segfault on host shutdown.
+
+    Bails out (no further retries) if the widget has been parented in
+    the meantime (e.g., by launch()'s recovery path), or if the widget
+    has become visible — at that point launch() owns recovery and a
+    re-parent here would disrupt the user's open popup.
+    """
+    try:
+        if widget.parent() is not None:
+            return
+        if widget.isVisible():
+            return
+    except RuntimeError:
+        return
+
+    parent = _find_nuke_main_window()
+    if parent is not None:
+        widget.setParent(parent, Qt.Dialog | Qt.FramelessWindowHint)
+        return
+
+    if attempts_remaining > 1:
+        QtCore.QTimer.singleShot(
+            _REPARENT_RETRY_INTERVAL_MS,
+            lambda: _try_reparent_preloaded(widget, attempts_remaining - 1),
+        )
+
+
 def _create_tabtabtab_widget(plugin, space_mode_order):
     parent = _find_nuke_main_window()
     # Qt.Dialog keeps the widget a top-level window even with a parent set.
@@ -938,6 +981,17 @@ def preload(plugin, space_mode_order=None):
         return
 
     _tabtabtab_instance = _create_tabtabtab_widget(plugin, space_mode_order)
+
+    # If the main window hadn't appeared yet, _create_tabtabtab_widget left
+    # the instance parentless. Schedule background retries so a preload-only
+    # session (user never invokes the popup) still ends up Qt-parented and
+    # benefits from the host-shutdown lifetime guarantee.
+    if _tabtabtab_instance.parent() is None:
+        preloaded_widget = _tabtabtab_instance
+        QtCore.QTimer.singleShot(
+            _REPARENT_RETRY_INTERVAL_MS,
+            lambda: _try_reparent_preloaded(preloaded_widget, _REPARENT_RETRY_MAX_ATTEMPTS),
+        )
 
 
 def schedule_preload(plugin, space_mode_order=None):
