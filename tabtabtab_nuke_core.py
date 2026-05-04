@@ -414,8 +414,91 @@ class NodeModel(QtCore.QAbstractListModel):
         sort_b = sorted(scored_b, key=lambda k: (-k['score'], k['text']))
         s = sort_a + sort_b
 
-        self._items = s
-        self.modelReset.emit()
+        self._apply_items(s)
+
+    def _apply_items(self, new_items):
+        """Replace visible items via minimal row operations instead of a
+        full modelReset.
+
+        Diff is keyed on `menupath` (each item's stable identity) over
+        the visible window only — rowCount is capped at num_items, so
+        anything past that is invisible to Qt and can be swapped silently.
+
+        Why this matters: the deferred refresh on popup show ran
+        modelReset twice (once for the cheap pass, once for the fresh
+        re-walk), which blanked the view, cleared selection, and made
+        results visibly "jump" each tick. Emitting begin/end Insert /
+        Remove / Move keeps the view stable across refreshes — the user
+        sees the previous open's results immediately, and they morph
+        into current as the timers tick instead of flashing through an
+        empty state.
+        """
+        parent = QtCore.QModelIndex()
+        n = self.num_items
+        visible_old = self._items[:n]
+        visible_new = new_items[:n]
+
+        new_key_set = {item['menupath'] for item in visible_new}
+
+        # Remove rows whose key is no longer present, walking back-to-front
+        # so earlier indices stay valid as we delete.
+        for i in range(len(visible_old) - 1, -1, -1):
+            if visible_old[i]['menupath'] not in new_key_set:
+                self.beginRemoveRows(parent, i, i)
+                del visible_old[i]
+                self.endRemoveRows()
+
+        # Walk the target order. At each position, ensure the right row
+        # is present — moving an existing one up, or inserting a new one.
+        for target_pos, new_item in enumerate(visible_new):
+            key = new_item['menupath']
+
+            if (target_pos < len(visible_old)
+                    and visible_old[target_pos]['menupath'] == key):
+                if not self._row_visually_equal(visible_old[target_pos], new_item):
+                    visible_old[target_pos] = new_item
+                    idx = self.index(target_pos)
+                    self.dataChanged.emit(idx, idx)
+                continue
+
+            source_pos = None
+            for j in range(target_pos + 1, len(visible_old)):
+                if visible_old[j]['menupath'] == key:
+                    source_pos = j
+                    break
+
+            if source_pos is not None:
+                # source_pos > target_pos always here, so destinationChild
+                # = target_pos is a valid move (Qt rejects no-op moves
+                # where dest == source or source + 1).
+                self.beginMoveRows(parent, source_pos, source_pos, parent, target_pos)
+                visible_old.insert(target_pos, visible_old.pop(source_pos))
+                self.endMoveRows()
+                if not self._row_visually_equal(visible_old[target_pos], new_item):
+                    visible_old[target_pos] = new_item
+                    idx = self.index(target_pos)
+                    self.dataChanged.emit(idx, idx)
+            else:
+                self.beginInsertRows(parent, target_pos, target_pos)
+                visible_old.insert(target_pos, new_item)
+                self.endInsertRows()
+
+        # Off-window items are invisible to the view; assign without
+        # emitting. Keep new_items[n:] so a later filter that narrows
+        # the result set can still draw from the full pool.
+        self._items = visible_old + new_items[n:]
+
+    @staticmethod
+    def _row_visually_equal(old_row, new_row):
+        """True if two rows would render identically. Compares only the
+        fields the delegate reads — skipping `menuobj` (host handle,
+        identity comparison is unreliable) and `menupath` (already
+        matched by caller)."""
+        return (
+            old_row.get('display_text') == new_row.get('display_text')
+            and old_row.get('score') == new_row.get('score')
+            and old_row.get('color') == new_row.get('color')
+        )
 
     def rowCount(self, parent=QtCore.QModelIndex()):
         return min(self.num_items, len(self._items))
@@ -712,65 +795,47 @@ class TabTabTabWidget(QtWidgets.QDialog):
         create previously created node (instead of the most popular)
         """
 
-        # Show the widget and focus the input *before* doing any heavy work.
-        # Reloading weights from disk and re-walking the host application's
-        # menus can take 100-400ms; if those run synchronously here, queued
-        # KeyPress events arrive before the line-edit is ready and the user's
-        # first character or two get lost (issue #3). Deferring via
-        # singleShot(0) lets Qt drain pending input events into the now-
-        # focused line-edit before the refresh blocks the GUI thread again.
+        # Run the cheap refresh synchronously so items are visible the
+        # instant the popup paints. weights.load() + plugin.get_items()
+        # against a warm cache is sub-millisecond; the 100-400ms cost
+        # that motivated the original deferral lives in invalidate_cache()
+        # + full re-walk, which is still deferred via _refresh_fresh.
+        #
+        # NodeModel now emits row ops (not modelReset), so even if this
+        # cheap pass produces a slightly different list than the previous
+        # open, the user sees an incremental morph instead of a blank-
+        # and-rebuild flash.
+        self.weights.load()
+        self.things_model.refresh_items(self.plugin.get_items())
+        self.move_selection(where="first")
+
         self.input.selectAll()
         super(TabTabTabWidget, self).show()
         self.input.setFocus()
 
-        QtCore.QTimer.singleShot(0, self._refresh_after_show)
-
-    def _refresh_after_show(self):
-        """Cheap refresh: reload weights and render whatever the plugin's
-        cache currently has, so the user has results to look at and can
-        type immediately.
-
-        Runs on the next event-loop tick after show() so the user's first
-        keystrokes land in the line-edit even though this work is slow.
-
-        Schedules _refresh_fresh on the following tick to bound staleness:
-        the cache may be one step behind reality (a deep submenu install
-        the plugin's fingerprint can't sample, or a default-node-colour
-        preference edit), and waiting until close to refresh would leave
-        the user staring at stale data for the entire open session.
-        """
-        # Load the weights everytime the panel is shown, to prevent
-        # overwritting weights from other instances
-        self.weights.load()
-
-        # Refresh items from the plugin so additions/removals are reflected
-        self.things_model.refresh_items(self.plugin.get_items())
-
-        # Restore selection to the first item, since modelReset clears it
-        self.move_selection(where="first")
-
-        # Schedule the expensive freshness pass after focus and the cheap
-        # render are settled. The user can already type; this catches any
+        # Schedule the expensive freshness pass on the next tick. The
+        # user can already see results and type; this catches any
         # staleness the plugin's own cache check missed.
         QtCore.QTimer.singleShot(0, self._refresh_fresh)
 
     def _refresh_fresh(self):
         """Expensive refresh: force a full re-walk of the plugin's items,
-        bypassing whatever cache the cheap path used.
+        bypassing whatever cache the synchronous show()-time pass used.
 
-        Runs one tick after _refresh_after_show. Bounds staleness to a
-        brief moment after open instead of an entire open/close cycle,
-        at the cost of a possible slight typing hitch while the walk
-        runs. No-op if the user already closed the popup before this
-        fires — the next open will repeat the same two-stage refresh.
+        Runs one tick after show(). Bounds staleness to a brief moment
+        after open instead of an entire open/close cycle, at the cost
+        of a possible slight typing hitch while the walk runs. No-op
+        if the user already closed the popup before this fires — the
+        next open will repeat the same two-stage refresh.
+
+        NodeModel now emits row ops rather than modelReset, so this
+        pass is visually quiet when nothing changed: only the rows
+        that genuinely differ get touched.
         """
         if not self.isVisible():
             return
         self.plugin.invalidate_cache()
         self.things_model.refresh_items(self.plugin.get_items())
-        # refresh_items resets the model, which clears QListView selection;
-        # restore to the first match (works for both empty and filtered
-        # input — _filtertext is preserved across refresh_items).
         self.move_selection(where="first")
 
     def close(self):
