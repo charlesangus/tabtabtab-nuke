@@ -18,6 +18,7 @@ jobs:
           FOLDER_NAME="tabtabtab-nuke-${{ github.ref_name }}"
           mkdir -p "$FOLDER_NAME"
           cp tabtabtab_nuke_core.py tabtabtab_nuke.py menu.py tabtabtab_prefs.py tabtabtab_prefs_dialog.py readme.md LICENSE "$FOLDER_NAME/"
+          touch "$FOLDER_NAME/${{ github.ref_name }}"
           zip -r "$ZIP_NAME" "$FOLDER_NAME"
           echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
       - name: Create GitHub Release
