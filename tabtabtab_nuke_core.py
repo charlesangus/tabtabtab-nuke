@@ -803,26 +803,152 @@ class TabTabTabWidget(QtWidgets.QDialog):
 
 
 _tabtabtab_instance = None
-# Strong reference to a preloaded but never-yet-shown widget. Released
-# either on first show() (Qt's window registry takes over) or on
-# QApplication.aboutToQuit (whichever comes first), so the original
-# weakref-only lifetime pattern that avoids the on-exit segfault from
-# https://github.com/dbr/tabtabtab-nuke/issues/4 is restored before
-# host-application shutdown even if the user never opens the popup.
-_preloaded_instance = None
+
+
+_NUKE_MAIN_WINDOW_CLASSNAME = "Foundry::UI::DockMainWindow"
+
+
+def _find_nuke_main_window():
+    """Return Nuke's canonical main window (a QMainWindow), or None.
+
+    Nuke historically has multiple top-level QMainWindow instances —
+    floating panels, the Hiero/Studio bin/timeline, etc. Picking "the
+    first QMainWindow from topLevelWidgets()" is order-dependent and
+    can land us on a panel that the user later closes, taking our
+    popup with it. Identifying the main window canonically:
+
+      1. Match by Qt metaobject class name. Nuke's main window has a
+         stable className of "Foundry::UI::DockMainWindow" across
+         Nuke 11+; floating panels and other QMainWindows do not.
+      2. Fallback: any parentless QMainWindow whose title contains
+         " - Nuke" (matches "<file> - Nuke 14.0v5", "<file> - NukeX ...",
+         "<file> - NukeStudio ...", etc.) — covers modified Nuke
+         distributions or future class-name changes while still
+         excluding bare panels.
+      3. Otherwise None — better to be parentless than to grab a
+         floating panel and have the popup disappear when it closes.
+
+    Used as the Qt parent of the popup so its lifetime is owned by the
+    host. The host destroys child widgets in defined order during
+    shutdown, which avoids the dangling-wrapper segfault that the old
+    weakref-only pattern (dbr/tabtabtab-nuke#4) was working around.
+    """
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        return None
+
+    main_windows = [
+        widget for widget in app.topLevelWidgets()
+        if isinstance(widget, QtWidgets.QMainWindow)
+    ]
+
+    for widget in main_windows:
+        if widget.metaObject().className() == _NUKE_MAIN_WINDOW_CLASSNAME:
+            return widget
+
+    for widget in main_windows:
+        if widget.parent() is not None:
+            continue
+        title = widget.windowTitle() or ""
+        if " - Nuke" in title:
+            return widget
+
+    return None
+
+
+def _clear_tabtabtab_instance(*_args):
+    global _tabtabtab_instance
+    _tabtabtab_instance = None
+
+
+# Retry budget for preload-only re-parenting. Plugin-load typically runs
+# before Nuke's main window is registered in topLevelWidgets(), but the
+# main window appears within a second or two; ~10s of retries is enough
+# without spinning indefinitely if something genuinely went wrong.
+_REPARENT_RETRY_INTERVAL_MS = 500
+_REPARENT_RETRY_MAX_ATTEMPTS = 20
+
+
+def _try_reparent_preloaded(widget, attempts_remaining):
+    """Re-parent a parentless preloaded `widget` to Nuke's main window;
+    retry on a timer if the main window isn't in topLevelWidgets() yet.
+
+    Used from preload() to recover when preload runs before the main
+    window has been created. Without this, a session in which the user
+    never invokes the popup leaves the cached instance parentless for
+    the rest of the session — silently losing the parent-owned lifetime
+    that prevents the dbr/tabtabtab-nuke#4 segfault on host shutdown.
+
+    Bails out (no further retries) if the widget has been parented in
+    the meantime (e.g., by launch()'s recovery path), or if the widget
+    has become visible — at that point launch() owns recovery and a
+    re-parent here would disrupt the user's open popup.
+    """
+    try:
+        if widget.parent() is not None:
+            return
+        if widget.isVisible():
+            return
+    except RuntimeError:
+        return
+
+    parent = _find_nuke_main_window()
+    if parent is not None:
+        widget.setParent(parent, Qt.Dialog | Qt.FramelessWindowHint)
+        return
+
+    if attempts_remaining > 1:
+        QtCore.QTimer.singleShot(
+            _REPARENT_RETRY_INTERVAL_MS,
+            lambda: _try_reparent_preloaded(widget, attempts_remaining - 1),
+        )
+
+
+def _create_tabtabtab_widget(plugin, space_mode_order):
+    parent = _find_nuke_main_window()
+    # Qt.Dialog keeps the widget a top-level window even with a parent set.
+    # Without it, setWindowFlags(FramelessWindowHint) drops the dialog type
+    # and Qt treats the widget as a child of the parent — which puts it in
+    # the parent's z-stack (so the DAG can cover it) and stops it from
+    # receiving WindowDeactivate (so click-outside no longer closes it).
+    widget = TabTabTabWidget(
+        plugin,
+        parent=parent,
+        winflags=Qt.Dialog | Qt.FramelessWindowHint,
+        space_mode_order=space_mode_order,
+    )
+    widget.destroyed.connect(_clear_tabtabtab_instance)
+    return widget
 
 
 def launch(plugin, space_mode_order=None):
-    global _tabtabtab_instance, _preloaded_instance
+    global _tabtabtab_instance
 
     if _tabtabtab_instance is not None:
-        # TODO: Is there a better way of doing this? If a
-        # TabTabTabWidget is instanced, it goes out of scope at end of
-        # function and disappers instantly. This seems like a
-        # reasonable "workaround"
         try:
-            # Update space mode order on reuse so pref changes take
-            # effect without restarting the host application.
+            # Liveness probe before any attribute writes: parent() touches
+            # the underlying C++ object and raises RuntimeError if the
+            # wrapper is dangling, so the except below catches a dead
+            # widget cleanly rather than silently mutating things_model.
+            current_parent = _tabtabtab_instance.parent()
+
+            # Recover from preload-before-main-window: if preload() ran
+            # before Nuke's main window existed in topLevelWidgets(),
+            # _find_nuke_main_window() returned None and the cached
+            # instance is parentless — silently re-exposing the on-quit
+            # segfault from dbr/tabtabtab-nuke#4. Re-parent now if the
+            # main window has since appeared. setParent(parent, flags)
+            # also re-applies the window flags, which is required: a
+            # bare setParent on a top-level widget would demote it to a
+            # child of the main window's z-stack.
+            if current_parent is None:
+                rediscovered_parent = _find_nuke_main_window()
+                if rediscovered_parent is not None:
+                    _tabtabtab_instance.setParent(
+                        rediscovered_parent,
+                        Qt.Dialog | Qt.FramelessWindowHint,
+                    )
+
             if (space_mode_order is not None
                     and len(space_mode_order) == len(DEFAULT_SPACE_MODE_ORDER)
                     and all(m in VALID_MODES for m in space_mode_order)):
@@ -830,29 +956,19 @@ def launch(plugin, space_mode_order=None):
             _tabtabtab_instance.under_cursor()
             _tabtabtab_instance.show()
             _tabtabtab_instance.raise_()
-            # Once the widget has been shown, Qt holds it alive via its
-            # window registry. Drop the preload strong reference so we
-            # match the original lifetime model from here on.
-            _preloaded_instance = None
             return
-        except ReferenceError:
+        except RuntimeError:
+            # Defensive: in normal operation the destroyed-signal handler
+            # (_clear_tabtabtab_instance) nulls the global synchronously
+            # when the C++ widget is destroyed, so we should never reach
+            # this branch with a dangling wrapper. Kept in case a
+            # destroyed connection was ever severed or never wired up.
             _tabtabtab_instance = None
-            _preloaded_instance = None
 
-    t = TabTabTabWidget(plugin, winflags=Qt.FramelessWindowHint, space_mode_order=space_mode_order)
-
-    # Make dialog appear under cursor, as Nuke's builtin one does
-    t.under_cursor()
-
-    # Show, and make front-most window (mostly for OS X)
-    t.show()
-    t.raise_()
-
-    # Keep the TabTabTabWidget alive, but don't keep an extra
-    # reference to it, otherwise Nuke segfaults on exit. Hacky.
-    # https://github.com/dbr/tabtabtab-nuke/issues/4
-    import weakref
-    _tabtabtab_instance = weakref.proxy(t)
+    _tabtabtab_instance = _create_tabtabtab_widget(plugin, space_mode_order)
+    _tabtabtab_instance.under_cursor()
+    _tabtabtab_instance.show()
+    _tabtabtab_instance.raise_()
 
 
 def preload(plugin, space_mode_order=None):
@@ -868,38 +984,22 @@ def preload(plugin, space_mode_order=None):
     the host's own menu population, so prefer schedule_preload() which
     defers via QTimer.singleShot(0, ...).
     """
-    global _tabtabtab_instance, _preloaded_instance
+    global _tabtabtab_instance
     if _tabtabtab_instance is not None:
         return
 
-    t = TabTabTabWidget(plugin, winflags=Qt.FramelessWindowHint, space_mode_order=space_mode_order)
-    # Hold a strong reference until first show(); without this the proxy
-    # below would dangle the moment this function returns because Qt's
-    # window registry only tracks widgets that have been shown.
-    _preloaded_instance = t
+    _tabtabtab_instance = _create_tabtabtab_widget(plugin, space_mode_order)
 
-    # Defensively release the strong reference before the host application
-    # quits, even if the user never opens the popup. Holding an extra ref
-    # to the widget through Qt shutdown has caused segfaults historically
-    # (dbr/tabtabtab-nuke#4); aboutToQuit fires before Qt's cleanup pass,
-    # so dropping the ref here puts us back into the original weakref-
-    # only model in time.
-    app = QtWidgets.QApplication.instance()
-    if app is not None:
-        app.aboutToQuit.connect(_release_preloaded_instance)
-
-    import weakref
-    _tabtabtab_instance = weakref.proxy(t)
-
-
-def _release_preloaded_instance():
-    """aboutToQuit handler: drop strong + weak references to the preloaded
-    widget so Qt can tear it down without an extra Python reference
-    holding the wrapper alive past the C++ object's destruction.
-    """
-    global _preloaded_instance, _tabtabtab_instance
-    _preloaded_instance = None
-    _tabtabtab_instance = None
+    # If the main window hadn't appeared yet, _create_tabtabtab_widget left
+    # the instance parentless. Schedule background retries so a preload-only
+    # session (user never invokes the popup) still ends up Qt-parented and
+    # benefits from the host-shutdown lifetime guarantee.
+    if _tabtabtab_instance.parent() is None:
+        preloaded_widget = _tabtabtab_instance
+        QtCore.QTimer.singleShot(
+            _REPARENT_RETRY_INTERVAL_MS,
+            lambda: _try_reparent_preloaded(preloaded_widget, _REPARENT_RETRY_MAX_ATTEMPTS),
+        )
 
 
 def schedule_preload(plugin, space_mode_order=None):
