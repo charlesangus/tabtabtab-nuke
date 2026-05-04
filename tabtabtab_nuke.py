@@ -139,9 +139,10 @@ class NukePlugin(TabTabTabPlugin):
         avoids them entirely so the staleness check is essentially free.
 
         Belt-and-suspenders against fingerprint blind spots: TabTabTabWidget
-        calls invalidate_cache() after every popup close, so deeply nested
-        menu changes that the shallow fingerprint can't sample are still
-        picked up at most one popup later.
+        runs a second deferred refresh on every open that calls
+        invalidate_cache() and re-walks, so deeply nested menu changes
+        that the shallow fingerprint can't sample are picked up within
+        the same open (after a brief render of the cached data).
         """
         fingerprint = (
             _menu_fingerprint(nuke.menu("Nodes")),
@@ -165,17 +166,18 @@ class NukePlugin(TabTabTabPlugin):
         # Menu set changed (or first walk) — drop colour cache too in case
         # new node classes appeared. Independent invalidation of the colour
         # cache for default-colour preference edits happens via
-        # invalidate_cache() called from TabTabTabWidget._refresh_after_close.
+        # invalidate_cache() called from TabTabTabWidget._refresh_fresh.
         self._color_cache = {}
         return all_items
 
     def invalidate_cache(self):
         """Drop the items + fingerprint cache and the per-class colour
-        cache. Called by TabTabTabWidget._refresh_after_close after every
-        popup close so the next get_items() walks fresh data, regardless
-        of whether the shallow menu fingerprint would have caught the
-        change. Also clears colour memoisation so default-node-colour
-        preference edits show up on the next open."""
+        cache. Called by TabTabTabWidget._refresh_fresh on the second
+        deferred tick of every open so the get_items() that follows
+        walks fresh data, regardless of whether the shallow menu
+        fingerprint would have caught the change. Also clears colour
+        memoisation so default-node-colour preference edits show up on
+        the same open they were made on."""
         self._cached_items = None
         self._cached_menu_fingerprint = None
         self._color_cache = {}
