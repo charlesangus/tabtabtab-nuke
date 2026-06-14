@@ -394,8 +394,7 @@ class NodeModel(QtCore.QAbstractListModel):
                     'display_text': display_text,
                     'menupath': n['menupath'],
                     'menuobj': n['menuobj'],
-                    'score': score,
-                    'color': self._color_fn(n['menuobj'])})
+                    'score': score})
 
             elif not force_consecutive and nonconsec_find(filtertext, search_string, anchored):
                 # Matches, get weighting and add to list of stuff
@@ -406,15 +405,25 @@ class NodeModel(QtCore.QAbstractListModel):
                     'display_text': display_text,
                     'menupath': n['menupath'],
                     'menuobj': n['menuobj'],
-                    'score': score,
-                    'color': self._color_fn(n['menuobj'])})
+                    'score': score})
 
         # Sort based on scores (descending), then alphabetically
         sort_a = sorted(scored_a, key=lambda k: (-k['score'], k['text']))
         sort_b = sorted(scored_b, key=lambda k: (-k['score'], k['text']))
         s = sort_a + sort_b
 
-        self._apply_items(s)
+        # Resolve colour only for the rows that will actually be shown.
+        # Colour plays no part in scoring or sorting, and only the first
+        # num_items rows are ever painted. Computing it for every candidate
+        # meant a nuke.defaultNodeColor() call per matched item — the entire
+        # menu set when the filter is empty, which is exactly the first-
+        # invocation state. Cap first, then colour the survivors so the cost
+        # is O(num_items) per update instead of O(matches).
+        visible = s[:self.num_items]
+        for item in visible:
+            item['color'] = self._color_fn(item['menuobj'])
+
+        self._apply_items(visible)
 
     def _apply_items(self, new_items):
         """Replace visible items via minimal row operations instead of a

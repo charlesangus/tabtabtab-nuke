@@ -177,6 +177,40 @@ def _row(menupath, score=0, display_text=None, color=(None, None)):
     }
 
 
+class _CountingColorFn:
+    """color_fn stand-in that records how many times it was invoked, so
+    tests can assert colour is resolved only for the visible window."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, menuobj):
+        self.calls += 1
+        return (None, None)
+
+
+def _make_filtering_model(module, all_items, num_items=18, filtertext="",
+                          color_fn=None):
+    """Construct a NodeModel without __init__, wired with just enough
+    state to exercise update() (filter + score + colour resolution)."""
+    model = module.NodeModel.__new__(module.NodeModel)
+    module.QtCore.QAbstractListModel.__init__(model)
+    model.num_items = num_items
+    model._all = all_items
+    model._filtertext = filtertext
+    model._icon_fn = lambda obj: None
+    model._color_fn = color_fn if color_fn is not None else (lambda obj: (None, None))
+    model._space_mode_order = list(module.DEFAULT_SPACE_MODE_ORDER)
+    model._items = []
+    model.weights = types.SimpleNamespace(get=lambda menupath, default=0: 0)
+    return model
+
+
+def _menu_item(menupath):
+    """A get_items()-shaped entry: only the fields update() reads."""
+    return {"menupath": menupath, "menuobj": object()}
+
+
 # --- tests --------------------------------------------------------------
 
 
@@ -317,6 +351,46 @@ def test_pre_existing_off_window_items_are_trimmed_silently():
 
     assert model.recorded_ops == []
     assert [i["menupath"] for i in model._items] == ["A", "B", "C"]
+
+
+def test_update_resolves_colour_only_for_visible_window():
+    """With an empty filter every item matches (the first-invocation
+    state), but only num_items rows are painted. update() must call
+    color_fn at most num_items times, not once per matched candidate —
+    that eager per-candidate colour loop was the first-invocation hitch
+    (issue #11)."""
+    module = _load_core()
+    counter = _CountingColorFn()
+    all_items = [_menu_item("Cat/Node%02d" % i) for i in range(50)]
+    model = _make_filtering_model(
+        module, all_items, num_items=18, filtertext="", color_fn=counter
+    )
+
+    model.update()
+
+    assert len(model._items) == 18
+    assert counter.calls == 18
+    assert all(item["color"] == (None, None) for item in model._items)
+
+
+def test_update_colours_every_match_when_fewer_than_window():
+    """When the match count is below num_items, colour is resolved for
+    exactly the matched rows — never more than were shown."""
+    module = _load_core()
+    counter = _CountingColorFn()
+    all_items = [
+        _menu_item("Cat/Apple"),
+        _menu_item("Cat/Avocado"),
+        _menu_item("Cat/Banana"),
+    ]
+    model = _make_filtering_model(
+        module, all_items, num_items=18, filtertext="a", color_fn=counter
+    )
+
+    model.update()
+
+    assert counter.calls == len(model._items)
+    assert counter.calls <= 18
 
 
 def test_self_items_consistent_at_end_of_each_pair():
