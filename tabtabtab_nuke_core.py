@@ -67,12 +67,25 @@ class TabTabTabPlugin:
         return (None, None)
 
     def invalidate_cache(self):
-        """Optional hook called after the popup closes so the next get_items()
-        and get_color() return fresh data.
+        """Optional hook to drop ALL plugin-side caches so the next
+        get_items() and get_color() return fully fresh data.
 
         Override to drop any plugin-side caches (e.g., a recursive menu walk
         or per-class colour memoisation). Default is a no-op for plugins that
-        don't cache.
+        don't cache. No longer called on every open — get_items() is trusted
+        to re-walk on its own when its change-detection (e.g. a menu
+        fingerprint) fires. See invalidate_color_cache for the per-open hook.
+        """
+        pass
+
+    def invalidate_color_cache(self):
+        """Optional hook called on each open's second deferred tick to drop
+        only colour memoisation — not the (expensive) item walk cache.
+
+        Lets host-side default-colour / preference edits, which don't change
+        menu structure and so wouldn't trip get_items()'s change detection,
+        surface on the open they were made without forcing a full re-walk.
+        Default is a no-op for plugins that don't cache colour.
         """
         pass
 
@@ -874,14 +887,22 @@ class TabTabTabWidget(QtWidgets.QDialog):
         QtCore.QTimer.singleShot(0, self._refresh_fresh)
 
     def _refresh_fresh(self):
-        """Expensive refresh: force a full re-walk of the plugin's items,
-        bypassing whatever cache the cheap path used.
+        """Second deferred tick: drop the plugin's colour memoisation and
+        re-render, so host-side colour / preference edits that leave menu
+        structure unchanged surface on the open they were made.
 
-        Runs one tick after _refresh_after_show. Bounds staleness to a
-        brief moment after open instead of an entire open/close cycle,
-        at the cost of a possible slight typing hitch while the walk
-        runs. No-op if the user already closed the popup before this
-        fires — the next open will repeat the same two-stage refresh.
+        Runs one tick after _refresh_after_show. Unlike the previous
+        design it does NOT force a full item re-walk: get_items() re-walks
+        on its own only when its change detection (a full-depth menu
+        fingerprint) differs, so an unchanged menu set — the common case —
+        reuses the preloaded cache instead of paying the 100-400ms
+        .script()/.shortcut() walk on every single open. That forced walk
+        was a first-invocation cost in issue #11. Colour is resolved
+        lazily for the visible window now, so clearing its cache here is
+        cheap.
+
+        No-op if the user already closed the popup before this fires —
+        the next open will repeat the same two-stage refresh.
 
         NodeModel emits row ops rather than modelReset, so this pass is
         visually quiet when nothing changed: only rows that genuinely
@@ -889,7 +910,7 @@ class TabTabTabWidget(QtWidgets.QDialog):
         """
         if not self.isVisible():
             return
-        self.plugin.invalidate_cache()
+        self.plugin.invalidate_color_cache()
         self.things_model.refresh_items(self.plugin.get_items())
         self.move_selection(where="first")
 
