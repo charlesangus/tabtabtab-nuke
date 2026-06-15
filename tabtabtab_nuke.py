@@ -27,30 +27,28 @@ def _extract_node_class_from_script(script_text):
     return None
 
 
-def _menu_fingerprint(menu, depth=2):
-    """Cheap fingerprint of a Nuke menu using only item names.
+def _menu_fingerprint(menu):
+    """Full-depth fingerprint of a Nuke menu using only item names.
 
     Used to detect whether a full re-walk via _find_nuke_menu_items is
-    needed. Calling .name() on items is essentially free; .script() and
-    .shortcut() (the expensive calls) are deliberately avoided here.
+    needed. Calling .name() on items and .items() on submenus are the
+    cheap calls; .script() and .shortcut() (the expensive ones done by
+    _find_nuke_menu_items) are deliberately avoided here, so this stays
+    far cheaper than a full walk even while recursing the whole tree.
 
-    Recurses `depth` levels so common gizmo / menu installs are detected
-    without paying for a full traversal. Deep additions buried below the
-    fingerprint depth (e.g. a new ToolSet several levels in) are missed
-    by this fast-path check, but the belt-and-suspenders refresh in
-    TabTabTabWidget._refresh_after_close calls invalidate_cache() on
-    every popup close, so deep changes are still picked up — at most
-    one stale popup behind any given mid-session change.
+    Recurses every level rather than a bounded depth: get_items() compares
+    this fingerprint to decide whether to re-walk, and TabTabTabWidget no
+    longer forces an unconditional re-walk on every open. A shallow
+    fingerprint would let a deep mid-session install (e.g. a new ToolSet
+    several levels in) slip past unnoticed; sampling every level keeps the
+    cache trustworthy without paying the expensive per-leaf reads.
     """
     parts = []
     try:
         for item in menu.items():
             name = item.name()
             if isinstance(item, nuke.Menu):
-                if depth > 1:
-                    parts.append(("M", name, _menu_fingerprint(item, depth - 1)))
-                else:
-                    parts.append(("M", name))
+                parts.append(("M", name, _menu_fingerprint(item)))
             else:
                 parts.append(("I", name))
     except Exception:
@@ -132,17 +130,18 @@ class NukePlugin(TabTabTabPlugin):
         """Return all menu items, using a cached result if menus haven't
         changed since the last walk.
 
-        Walks both Nodes and Nuke menus only when a cheap fingerprint of
-        those menus differs from the last walk, or when invalidate_cache()
-        has been called. The expensive part of the walk is the .script()
-        and .shortcut() calls inside _find_nuke_menu_items; the fingerprint
-        avoids them entirely so the staleness check is essentially free.
+        Walks both Nodes and Nuke menus only when a fingerprint of those
+        menus differs from the last walk, or when invalidate_cache() has
+        been called. The expensive part of the walk is the .script() and
+        .shortcut() calls inside _find_nuke_menu_items; the fingerprint
+        reads only item names (and submenu structure), so the staleness
+        check is cheap relative to a real walk.
 
-        Belt-and-suspenders against fingerprint blind spots: TabTabTabWidget
-        runs a second deferred refresh on every open that calls
-        invalidate_cache() and re-walks, so deeply nested menu changes
-        that the shallow fingerprint can't sample are picked up within
-        the same open (after a brief render of the cached data).
+        The fingerprint recurses the full menu tree, so even deeply nested
+        mid-session installs (a ToolSet several levels in) change it and
+        trigger a re-walk. TabTabTabWidget therefore no longer forces an
+        unconditional re-walk on every open — it trusts this check — which
+        is what removes the per-open .script()/.shortcut() cost.
         """
         fingerprint = (
             _menu_fingerprint(nuke.menu("Nodes")),
@@ -166,20 +165,29 @@ class NukePlugin(TabTabTabPlugin):
         # Menu set changed (or first walk) — drop colour cache too in case
         # new node classes appeared. Independent invalidation of the colour
         # cache for default-colour preference edits happens via
-        # invalidate_cache() called from TabTabTabWidget._refresh_fresh.
+        # invalidate_color_cache() called from TabTabTabWidget._refresh_fresh.
         self._color_cache = {}
         return all_items
 
     def invalidate_cache(self):
         """Drop the items + fingerprint cache and the per-class colour
-        cache. Called by TabTabTabWidget._refresh_fresh on the second
-        deferred tick of every open so the get_items() that follows
-        walks fresh data, regardless of whether the shallow menu
-        fingerprint would have caught the change. Also clears colour
-        memoisation so default-node-colour preference edits show up on
-        the same open they were made on."""
+        cache, forcing the next get_items() to walk fresh. No longer
+        called on every open: the full-depth menu fingerprint makes
+        get_items()'s own change detection reliable, so the popup relies
+        on that instead of an unconditional re-walk. Retained as an
+        explicit full-invalidation extension point."""
         self._cached_items = None
         self._cached_menu_fingerprint = None
+        self._color_cache = {}
+
+    def invalidate_color_cache(self):
+        """Drop only the per-class colour memoisation, leaving the items +
+        fingerprint cache intact. Called by TabTabTabWidget._refresh_fresh
+        on every open's second deferred tick so default-node-colour
+        preference edits — which don't change menu structure and so don't
+        trip the fingerprint — surface on the open they were made, without
+        forcing the expensive item re-walk. Cheap now that colour is
+        resolved only for the visible window."""
         self._color_cache = {}
 
     def get_weights_file(self):
