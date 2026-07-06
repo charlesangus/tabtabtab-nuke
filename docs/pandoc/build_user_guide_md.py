@@ -81,6 +81,8 @@ def build_user_guide(readme_text):
 
 
 def main():
+    if len(sys.argv) != 3:
+        sys.exit("Usage: python3 build_user_guide_md.py <readme.md> <output.md>")
     readme_path, output_path = sys.argv[1], sys.argv[2]
     with open(readme_path, encoding="utf-8") as readme_file:
         readme_text = readme_file.read()

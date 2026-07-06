@@ -1,7 +1,8 @@
 # Build the distributable PDF user guide from the project readme.
 #
-#   make pdf     build docs/user-guide.pdf from readme.md
-#   make clean   remove the generated PDF and build intermediates
+#   make pdf        build docs/user-guide.pdf from readme.md
+#   make clean      remove build intermediates (docs/.build/)
+#   make distclean  also remove the committed docs/user-guide.pdf
 #
 # The readme is the single source of truth. `make pdf` derives a print-oriented
 # Markdown copy (dropping the Contents, Demo GIFs, and Installation sections)
@@ -29,7 +30,7 @@ DOC_CLASS     := $(DOCS_DIR)/latex/training_doc.cls
 # so pandoc resolves docs/images/... without any extra resource path.
 export TEXINPUTS := $(CURDIR)/$(DOCS_DIR)/latex:
 
-.PHONY: pdf clean
+.PHONY: pdf clean distclean
 
 pdf: $(USER_GUIDE_PDF)
 
@@ -43,4 +44,10 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 clean:
-	rm -rf $(BUILD_DIR) $(USER_GUIDE_PDF)
+	rm -rf $(BUILD_DIR)
+
+# The PDF is a tracked artifact shipped in the release zip, so removing it is
+# kept out of `clean` (which would otherwise leave the repo dirty). Use this
+# target when you deliberately want to drop the built PDF too.
+distclean: clean
+	rm -f $(USER_GUIDE_PDF)

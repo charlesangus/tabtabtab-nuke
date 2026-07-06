@@ -134,6 +134,6 @@
 
 \newcommand\sbullet[1][.5]{\mathbin{\vcenter{\hbox{\scalebox{#1}{$\bullet$}}}}}
 
-% enable "max width=" in graphcis
+% enable "max width=" in graphics
 
 \usepackage[export]{adjustbox}
