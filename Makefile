@@ -24,6 +24,7 @@ PDF_DEFAULTS  := $(DOCS_DIR)/pandoc/pdf.yaml
 IMAGE_FILTER  := $(DOCS_DIR)/pandoc/float-images.lua
 BUILD_SCRIPT  := $(DOCS_DIR)/pandoc/build_user_guide_md.py
 DOC_CLASS     := $(DOCS_DIR)/latex/training_doc.cls
+DOC_LOGO      := $(DOCS_DIR)/latex/logo.pdf
 
 # Let xelatex find training_doc.cls. The trailing empty entry keeps the default
 # search path. Images are referenced relative to the repo root (where make runs),
@@ -34,7 +35,7 @@ export TEXINPUTS := $(CURDIR)/$(DOCS_DIR)/latex:
 
 pdf: $(USER_GUIDE_PDF)
 
-$(USER_GUIDE_PDF): $(README) $(PDF_DEFAULTS) $(IMAGE_FILTER) $(BUILD_SCRIPT) $(DOC_CLASS) | $(BUILD_DIR)
+$(USER_GUIDE_PDF): $(README) $(PDF_DEFAULTS) $(IMAGE_FILTER) $(BUILD_SCRIPT) $(DOC_CLASS) $(DOC_LOGO) | $(BUILD_DIR)
 	$(PYTHON) $(BUILD_SCRIPT) $(README) $(USER_GUIDE_MD)
 	$(PANDOC) --defaults $(PDF_DEFAULTS) \
 		--lua-filter $(IMAGE_FILTER) \

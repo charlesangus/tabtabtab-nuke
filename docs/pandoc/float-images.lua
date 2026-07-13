@@ -23,11 +23,12 @@
 --- drift out of its section or onto the footer. When a page break falls inside a
 --- row the whole row moves together to the next page (a clean break, not a gap).
 ---
---- Pairing: an image is put in a row with the paragraph that immediately follows
---- it (the detail paragraph), or, failing that, the paragraph immediately before
---- it (the intro sentence). The very first image is the wide hero DAG, which is
---- centred full width instead. An image with no adjacent paragraph (e.g. one that
---- sits alone before a heading or a list) is centred, capped at half width.
+--- Pairing: an image is put in a row with the paragraph that immediately precedes
+--- it (the intro sentence — the readme introduces every screenshot with the line
+--- above it), or, failing that, the paragraph immediately after it. The very first
+--- image is the wide hero DAG, which is centred full width instead. An image with
+--- no adjacent paragraph (e.g. one that sits alone before a heading or a list) is
+--- centred, capped at half width.
 ---
 --- Sizes are emitted explicitly (`max width` / `max totalheight`, from adjustbox's
 --- [export] option); the `\setkeys{Gin}{...}` default in pdf.yaml is silently
@@ -61,6 +62,13 @@ end
 
 local function raw_latex(text)
   return pandoc.RawBlock("latex", text)
+end
+
+--- Drop the readme's `---` section dividers from the printed guide. They read as
+--- separators on GitHub but look heavy and redundant in the PDF, where numbered
+--- headings already delimit sections.
+function HorizontalRule(_)
+  return {}
 end
 
 --- A small italic caption line, or "" when the image had no alt text.
@@ -197,15 +205,16 @@ function Pandoc(doc)
       local caption = pandoc.utils.stringify(image.caption)
       local following_block = blocks[i + 1]
       local preceding_block = output_blocks[#output_blocks]
-      if following_block ~= nil and following_block.t == "Para" then
-        -- Pair with the detail paragraph that follows the image.
-        insert_paired_row(output_blocks, following_block, image, caption)
-        i = i + 2
-      elseif preceding_block ~= nil and preceding_block.t == "Para" then
-        -- No following paragraph: pair with the intro sentence just above.
+      if preceding_block ~= nil and preceding_block.t == "Para" then
+        -- Pair with the intro sentence just above the image (the readme's layout).
         output_blocks:remove(#output_blocks)
         insert_paired_row(output_blocks, preceding_block, image, caption)
         i = i + 1
+      elseif following_block ~= nil and following_block.t == "Para" then
+        -- No intro above (e.g. image right under a heading): pair with the
+        -- paragraph that follows instead.
+        insert_paired_row(output_blocks, following_block, image, caption)
+        i = i + 2
       else
         -- Lone image with no text to sit beside: centre it at half width.
         insert_centred_image(output_blocks, image, caption, CENTRED_IMAGE_KEYS)
