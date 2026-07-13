@@ -88,12 +88,24 @@
 \renewcommand{\textit}{\textsc}
 \renewcommand{\textbf}{\textitold}
 
-% Custom Title
+% Custom Title. The logo (docs/latex/logo.pdf, found via TEXINPUTS) sits in a
+% narrow left column with the title/author to its right, matching the other
+% charlesangus project guides.
 \renewcommand{\maketitle}{
 \noindent
-{\huge \@title \par}
-\medskip
-{\large \@author \par}
+\begin{minipage}[c]{0.2\textwidth}
+  \vspace{0pt}
+  \begin{center}
+    \includegraphics[width=\textwidth]{logo}
+  \end{center}
+\end{minipage}\hfill%
+\begin{minipage}[c]{0.75\textwidth}
+  \vspace{0pt}
+  {\huge \@title \par}
+  \medskip
+  {\large \@author \par}
+  \vfill
+\end{minipage}\hfill
 \vspace{2\baselineskip}
 \thispagestyle{plain}
 }

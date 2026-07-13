@@ -64,6 +64,13 @@ local function raw_latex(text)
   return pandoc.RawBlock("latex", text)
 end
 
+--- Drop the readme's `---` section dividers from the printed guide. They read as
+--- separators on GitHub but look heavy and redundant in the PDF, where numbered
+--- headings already delimit sections.
+function HorizontalRule(_)
+  return {}
+end
+
 --- A small italic caption line, or "" when the image had no alt text.
 local function caption_latex(caption)
   if caption == "" then
