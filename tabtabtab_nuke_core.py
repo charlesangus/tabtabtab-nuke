@@ -915,8 +915,30 @@ class TabTabTabWidget(QtWidgets.QDialog):
         self.move_selection(where="first")
 
     def close(self):
-        """Save weights and close the dialog."""
+        """Save weights and close the dialog.
+
+        under_cursor() always positions this popup so the mouse pointer
+        lands directly on top of self.input, and QLineEdit shows an IBeam
+        cursor while hovered — completely normal on its own. The problem
+        is that this is a separate frameless top-level window
+        (Qt.Dialog | Qt.FramelessWindowHint) that gets hidden rather than
+        destroyed on every close path (Escape, click-outside via
+        WindowDeactivate, and node creation all route through here), and
+        the pointer typically hasn't moved when that happens. With no
+        mouse motion to trigger a cursor re-evaluation, the platform can
+        leave the popup's last cursor shape (the IBeam) on screen even
+        after whatever's now underneath (Nuke's main window / node graph)
+        takes over — an intermittent, hard-to-reproduce race (#16).
+        Force the cursor back to the arrow shape immediately on close
+        rather than relying on that implicit recompute: push an override
+        cursor now for a guaranteed on-screen update, then restore it on
+        the next event-loop tick so normal per-widget hover tracking
+        resumes once the newly-topmost window has had a chance to receive
+        its own enter event.
+        """
         self.weights.save()
+        QtWidgets.QApplication.setOverrideCursor(Qt.ArrowCursor)
+        QtCore.QTimer.singleShot(0, QtWidgets.QApplication.restoreOverrideCursor)
         super(TabTabTabWidget, self).close()
 
     def create(self):
