@@ -45,6 +45,17 @@ class TabtabtabPrefsDialog(QDialog):
         )
         form_layout.addRow("Enable Tabtabtab:", self.tabtabtab_enabled_checkbox)
 
+        self.scroll_enabled_checkbox = QCheckBox()
+        self.scroll_enabled_checkbox.setToolTip(
+            "When checked, the results list keeps more matches than fit in the "
+            "popup window and lets you scroll (or arrow-key) through the rest "
+            "instead of hiding them. The popup window stays the same size "
+            "either way. When unchecked, only the first screenful of matches "
+            "is kept, matching the previous behavior. Takes effect on the "
+            "next time Tabtabtab is opened."
+        )
+        form_layout.addRow("Enable scrolling through results:", self.scroll_enabled_checkbox)
+
         # Space-prefix mode mapping
         mode_group = QGroupBox("Space-prefix search modes")
         mode_layout = QFormLayout()
@@ -75,6 +86,7 @@ class TabtabtabPrefsDialog(QDialog):
     def _populate_from_prefs(self):
         prefs = tabtabtab_prefs.prefs_singleton
         self.tabtabtab_enabled_checkbox.setChecked(bool(prefs.get("tabtabtab_enabled")))
+        self.scroll_enabled_checkbox.setChecked(bool(prefs.get("scroll_enabled")))
 
         space_mode_order = prefs.get("space_mode_order")
         for i, combo in enumerate(self._space_combos):
@@ -96,6 +108,7 @@ class TabtabtabPrefsDialog(QDialog):
 
         enabled = self.tabtabtab_enabled_checkbox.isChecked()
         prefs.set("tabtabtab_enabled", enabled)
+        prefs.set("scroll_enabled", self.scroll_enabled_checkbox.isChecked())
         prefs.set("space_mode_order", space_mode_order)
         prefs.save()
         if enabled:

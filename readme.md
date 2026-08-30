@@ -173,6 +173,8 @@ Open **Edit > Tabtabtab Preferences...** to access the preferences dialog.
 
 - **Enable tabtabtab** — uncheck to disable the plugin and restore Nuke's default Tab behaviour. Changes take effect immediately without restarting Nuke.
 
+- **Enable scrolling through results** — when checked (the default), searches that match more nodes than fit in the popup window can be scrolled (mouse wheel, or up/down arrow past the last visible row) to reach the rest, instead of hiding them. The popup window itself stays the same fixed size either way. Uncheck to go back to only ever showing the first screenful of matches. Takes effect the next time Tabtabtab is opened.
+
 - **Space-prefix search modes** — assign which search mode is triggered by zero, one, or two leading spaces. Each of the three modes (Anchored fuzzy, Non-anchored fuzzy, Consecutive substring) must be assigned to exactly one space level. Defaults match the [Search modes](#search-modes) table above.
 
 ---
