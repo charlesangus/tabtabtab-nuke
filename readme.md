@@ -94,9 +94,9 @@ The table below shows the **default** space-prefix → mode mapping. The mapping
 
 | Prefix | Default behaviour |
 |--------|-------------------|
-| (none) | Anchored fuzzy match. Each character of your query must appear in order, starting from the beginning of the node name. "blr" matches "Blur" but not "ColorBurn". |
-| one space | Non-anchored fuzzy match. Characters must appear in order anywhere in the name. " blr" matches both "Blur" and "ColorBurn". |
-| two spaces | Non-anchored consecutive substring. The exact run of letters must appear somewhere in the name. "   blur" matches "MotionBlur" but not "Blur2". |
+| (none) | Anchored fuzzy match. Each character of your query must appear in order, starting from the beginning of the node name. "blr" matches "Blur" but not "MotionBlur". |
+| one space | Non-anchored fuzzy match. Characters must appear in order, but can start anywhere in the name. " blr" matches both "Blur" and "MotionBlur". |
+| two spaces | Non-anchored consecutive substring. The letters you type must appear as one unbroken run somewhere in the name. "  blur" matches both "Blur" and "MotionBlur", while "  blr" matches neither, because its letters are not adjacent. |
 | `[` | Include the category tag in the search. "ax[3d" narrows results to items whose category contains "3d", e.g. "Axis [3D]". Without `[`, the category tag is ignored. |
 
 ### Space-prefix repeat behaviour
