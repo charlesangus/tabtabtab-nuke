@@ -1,4 +1,5 @@
 try:
+    from PySide6.QtCore import Qt
     from PySide6.QtWidgets import (
         QCheckBox,
         QComboBox,
@@ -6,10 +7,12 @@ try:
         QDialogButtonBox,
         QFormLayout,
         QGroupBox,
+        QLabel,
         QMessageBox,
         QVBoxLayout,
     )
 except ImportError:
+    from PySide2.QtCore import Qt
     from PySide2.QtWidgets import (
         QCheckBox,
         QComboBox,
@@ -17,6 +20,7 @@ except ImportError:
         QDialogButtonBox,
         QFormLayout,
         QGroupBox,
+        QLabel,
         QMessageBox,
         QVBoxLayout,
     )
@@ -47,23 +51,87 @@ class TabtabtabPrefsDialog(QDialog):
 
         # Space-prefix mode mapping
         mode_group = QGroupBox("Space-prefix search modes")
-        mode_layout = QFormLayout()
+        mode_group.setToolTip(
+            "In the search box, typing 0, 1, or 2 spaces before your text selects a "
+            "different matching mode. Each row below controls which mode is used for "
+            "that number of leading spaces."
+        )
+        mode_layout = QVBoxLayout()
         mode_group.setLayout(mode_layout)
+
+        mode_explainer = QLabel(
+            "Type this many spaces before your search text in the tabtabtab popup to "
+            "use the mode selected on that row:"
+        )
+        mode_explainer.setWordWrap(True)
+        mode_layout.addWidget(mode_explainer)
 
         mode_labels = {
             tabtabtab_nuke_core.MODE_ANCHORED_FUZZY: "Anchored fuzzy",
             tabtabtab_nuke_core.MODE_NON_ANCHORED_FUZZY: "Non-anchored fuzzy",
             tabtabtab_nuke_core.MODE_CONSECUTIVE: "Consecutive substring",
         }
+        # Explains what each mode actually does when matching, with the same
+        # examples/wording used in the readme's "Search modes" table so the
+        # two stay consistent.
+        mode_descriptions = {
+            tabtabtab_nuke_core.MODE_ANCHORED_FUZZY: (
+                "Anchored fuzzy: each character you type must appear in order, "
+                'starting from the beginning of the node name. "blr" matches '
+                '"Blur" but not "ColorBurn".'
+            ),
+            tabtabtab_nuke_core.MODE_NON_ANCHORED_FUZZY: (
+                "Non-anchored fuzzy: characters must appear in order, but can "
+                'start anywhere in the name. "blr" matches both "Blur" and '
+                '"ColorBurn".'
+            ),
+            tabtabtab_nuke_core.MODE_CONSECUTIVE: (
+                "Consecutive substring: the exact run of letters you type must "
+                'appear together somewhere in the name. "blur" matches '
+                '"MotionBlur" but not "Blur2".'
+            ),
+        }
         all_modes = list(tabtabtab_nuke_core.DEFAULT_SPACE_MODE_ORDER)
 
+        combo_form = QFormLayout()
+        mode_layout.addLayout(combo_form)
+
+        space_row_tooltips = {
+            0: "Mode used when your search text has no leading space.",
+            1: "Mode used when your search text has exactly one leading space.",
+            2: "Mode used when your search text has two (or more) leading spaces.",
+        }
+
         self._space_combos = []
-        for space_label in ["No leading space:", "One leading space:", "Two leading spaces:"]:
+        self._space_descriptions = []
+        for level, space_label in enumerate(
+            ["No leading space:", "One leading space:", "Two leading spaces:"]
+        ):
             combo = QComboBox()
+            combo.setToolTip(space_row_tooltips[level])
             for mode_id in all_modes:
                 combo.addItem(mode_labels[mode_id], mode_id)
-            mode_layout.addRow(space_label, combo)
+                combo.setItemData(
+                    combo.count() - 1, mode_descriptions[mode_id], Qt.ToolTipRole
+                )
+            combo_form.addRow(space_label, combo)
             self._space_combos.append(combo)
+
+            description_label = QLabel()
+            description_label.setWordWrap(True)
+            description_font = description_label.font()
+            description_font.setItalic(True)
+            description_font.setPointSize(max(description_font.pointSize() - 1, 1))
+            description_label.setFont(description_font)
+            combo_form.addRow("", description_label)
+            self._space_descriptions.append(description_label)
+
+            combo.currentIndexChanged.connect(
+                lambda _idx, c=combo, lbl=description_label: lbl.setText(
+                    mode_descriptions.get(c.currentData(), "")
+                )
+            )
+            description_label.setText(mode_descriptions.get(combo.currentData(), ""))
 
         main_layout.addWidget(mode_group)
 
