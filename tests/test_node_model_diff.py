@@ -154,13 +154,18 @@ def _load_core():
     return module
 
 
-def _make_model(module, num_items=18, items=None):
+def _make_model(module, num_items=18, max_items=None, items=None):
     """Construct a NodeModel without running its __init__ (which would
     require a plugin and call update()). We only need the recording
-    base-class state plus the two fields _apply_items reads."""
+    base-class state plus the fields _apply_items reads.
+
+    max_items defaults to num_items, matching scrolling-disabled
+    behaviour (the old capped-to-window regime _apply_items was
+    originally written against)."""
     model = module.NodeModel.__new__(module.NodeModel)
     module.QtCore.QAbstractListModel.__init__(model)
     model.num_items = num_items
+    model.max_items = max_items if max_items is not None else num_items
     model._items = list(items or [])
     return model
 
@@ -189,13 +194,16 @@ class _CountingColorFn:
         return (None, None)
 
 
-def _make_filtering_model(module, all_items, num_items=18, filtertext="",
+def _make_filtering_model(module, all_items, num_items=18, max_items=None, filtertext="",
                           color_fn=None):
     """Construct a NodeModel without __init__, wired with just enough
-    state to exercise update() (filter + score + colour resolution)."""
+    state to exercise update() (filter + score + colour resolution).
+
+    max_items defaults to num_items (scrolling-disabled behaviour)."""
     model = module.NodeModel.__new__(module.NodeModel)
     module.QtCore.QAbstractListModel.__init__(model)
     model.num_items = num_items
+    model.max_items = max_items if max_items is not None else num_items
     model._all = all_items
     model._filtertext = filtertext
     model._icon_fn = lambda obj: None
@@ -353,12 +361,14 @@ def test_pre_existing_off_window_items_are_trimmed_silently():
     assert [i["menupath"] for i in model._items] == ["A", "B", "C"]
 
 
-def test_update_resolves_colour_only_for_visible_window():
+def test_update_never_resolves_colour_eagerly():
     """With an empty filter every item matches (the first-invocation
-    state), but only num_items rows are painted. update() must call
-    color_fn at most num_items times, not once per matched candidate —
-    that eager per-candidate colour loop was the first-invocation hitch
-    (issue #11)."""
+    state). update() must never call color_fn itself — colour is resolved
+    lazily by data(), only for rows Qt actually paints (see
+    test_data_resolves_colour_lazily_and_caches below). An eager
+    per-candidate colour loop in update() was the first-invocation hitch
+    fixed for issue #11; this asserts that fix isn't reintroduced by
+    scrolling retaining more matched rows than fit in the window."""
     module = _load_core()
     counter = _CountingColorFn()
     all_items = [_menu_item("Cat/Node%02d" % i) for i in range(50)]
@@ -369,28 +379,135 @@ def test_update_resolves_colour_only_for_visible_window():
     model.update()
 
     assert len(model._items) == 18
-    assert counter.calls == 18
-    assert all(item["color"] == (None, None) for item in model._items)
+    assert counter.calls == 0
+    assert all("color" not in item for item in model._items)
 
 
-def test_update_colours_every_match_when_fewer_than_window():
-    """When the match count is below num_items, colour is resolved for
-    exactly the matched rows — never more than were shown."""
+def test_data_resolves_colour_lazily_and_caches():
+    """data() resolves colour on first access to a row and caches it on
+    the row dict, so repeated paints (e.g. re-rendering an unscrolled
+    view, or querying multiple roles for the same row) don't repeat the
+    color_fn call. This is what keeps scrolling — which can retain far
+    more rows than num_items — from paying color_fn once per retained
+    row: only rows actually queried via data() (i.e. painted) cost
+    anything."""
     module = _load_core()
     counter = _CountingColorFn()
-    all_items = [
-        _menu_item("Cat/Apple"),
-        _menu_item("Cat/Avocado"),
-        _menu_item("Cat/Banana"),
-    ]
+    all_items = [_menu_item("Cat/Apple"), _menu_item("Cat/Banana")]
     model = _make_filtering_model(
-        module, all_items, num_items=18, filtertext="a", color_fn=counter
+        module, all_items, num_items=18, filtertext="", color_fn=counter
+    )
+    model.update()
+    assert counter.calls == 0
+
+    index = _StubIndex(0)
+    model.data(index, role=module.Qt.BackgroundRole)
+    assert counter.calls == 1
+
+    # Same row, different role: cached, no extra call.
+    model.data(index, role=module.Qt.ForegroundRole)
+    model.data(index, role=module.Qt.UserRole)
+    assert counter.calls == 1
+
+    # A second row is resolved independently.
+    model.data(_StubIndex(1), role=module.Qt.BackgroundRole)
+    assert counter.calls == 2
+
+
+def test_invalidate_color_cache_forces_recompute_on_next_access():
+    """NodeModel.invalidate_color_cache() drops the per-row cached colour
+    so the next data() call recomputes it. Needed because an unchanged
+    row is retained as the very same dict across update() calls (the
+    _apply_items fast path), so without this a stale cached colour would
+    survive forever — even across the TabTabTabWidget._refresh_fresh tick
+    that's supposed to surface host-side colour/preference edits."""
+    module = _load_core()
+    counter = _CountingColorFn()
+    all_items = [_menu_item("Cat/Apple")]
+    model = _make_filtering_model(
+        module, all_items, num_items=18, filtertext="", color_fn=counter
+    )
+    model.update()
+
+    index = _StubIndex(0)
+    model.data(index, role=module.Qt.BackgroundRole)
+    model.data(index, role=module.Qt.BackgroundRole)
+    assert counter.calls == 1
+
+    model.invalidate_color_cache()
+    model.data(index, role=module.Qt.BackgroundRole)
+    assert counter.calls == 2
+
+
+def test_scroll_disabled_caps_retained_items_to_num_items():
+    """With scrolling disabled (max_items == num_items), retained rows
+    never exceed the window size — the original capped-to-window
+    behaviour."""
+    module = _load_core()
+    all_items = [_menu_item("Cat/Node%02d" % i) for i in range(50)]
+    model = _make_filtering_model(
+        module, all_items, num_items=18, max_items=18, filtertext=""
     )
 
     model.update()
 
-    assert counter.calls == len(model._items)
-    assert counter.calls <= 18
+    assert len(model._items) == 18
+
+
+def test_scroll_enabled_retains_more_than_num_items():
+    """With scrolling enabled (max_items > num_items), matches beyond the
+    visible window are still retained in the model instead of discarded,
+    so the view has more rows than fit on screen to scroll through. The
+    window itself is unaffected by this — TabTabTabWidget sizes it off
+    num_items alone, not max_items."""
+    module = _load_core()
+    all_items = [_menu_item("Cat/Node%02d" % i) for i in range(50)]
+    model = _make_filtering_model(
+        module, all_items, num_items=18, max_items=100, filtertext=""
+    )
+
+    model.update()
+
+    assert len(model._items) == 50
+    assert len(model._items) > model.num_items
+
+
+def test_scroll_enabled_still_bounded_by_max_items():
+    """max_items remains a hard cap even with scrolling enabled — an
+    unbounded retention list would make the per-keystroke row-diff in
+    _apply_items scale with total match count with no ceiling."""
+    module = _load_core()
+    all_items = [_menu_item("Cat/Node%02d" % i) for i in range(500)]
+    model = _make_filtering_model(
+        module, all_items, num_items=18, max_items=100, filtertext=""
+    )
+
+    model.update()
+
+    assert len(model._items) == 100
+
+
+def test_set_scroll_enabled_adjusts_cap_and_rerenders():
+    """set_scroll_enabled() is how a live preference change reaches an
+    already-constructed (preloaded/cached) NodeModel: it should widen or
+    narrow max_items and immediately re-run update() against the new
+    cap."""
+    module = _load_core()
+    all_items = [_menu_item("Cat/Node%02d" % i) for i in range(50)]
+    model = _make_filtering_model(
+        module, all_items, num_items=18, max_items=18, filtertext=""
+    )
+    model._scroll_max_items = 100
+    model.update()
+    assert len(model._items) == 18
+
+    model.set_scroll_enabled(True)
+    assert model.max_items == 100
+    assert len(model._items) == 50
+
+    model.set_scroll_enabled(False)
+    assert model.max_items == 18
+    assert len(model._items) == 18
 
 
 def test_self_items_consistent_at_end_of_each_pair():

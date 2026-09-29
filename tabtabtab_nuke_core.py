@@ -30,6 +30,16 @@ DEFAULT_SPACE_MODE_ORDER = [
     MODE_CONSECUTIVE,          # 2 spaces
 ]
 
+# Upper bound on how many matched rows NodeModel retains when scrolling is
+# enabled. The popup window stays a fixed height (num_items visible rows);
+# this only controls how many additional off-screen rows are reachable by
+# scrolling. Kept well above any realistic match count (a search like
+# " Deep" matches a few dozen nodes at most) so "see all the results" holds
+# in practice, while still bounding the cost of the row-diff in
+# NodeModel._apply_items for the empty-filter/first-invocation case where
+# every item in the host's menu matches.
+DEFAULT_SCROLL_MAX_ITEMS = 300
+
 
 class TabTabTabPlugin:
     def get_items(self):
@@ -318,11 +328,16 @@ class NodeWeights(object):
 
 
 class NodeModel(QtCore.QAbstractListModel):
-    def __init__(self, mlist, weights, num_items=18, filtertext="", icon_fn=None, color_fn=None, space_mode_order=None):
+    def __init__(self, mlist, weights, num_items=18, filtertext="", icon_fn=None, color_fn=None,
+                 space_mode_order=None, scroll_enabled=False, scroll_max_items=DEFAULT_SCROLL_MAX_ITEMS):
         super(NodeModel, self).__init__()
 
         self.weights = weights
+        # num_items is the number of rows the popup window is sized to show
+        # at once (see TabTabTabWidget._resize_list_to_contents) — it is
+        # NOT the row-retention cap; that's self.max_items below.
         self.num_items = num_items
+        self._scroll_max_items = scroll_max_items
 
         self._all = mlist
         self._filtertext = filtertext
@@ -336,6 +351,13 @@ class NodeModel(QtCore.QAbstractListModel):
         else:
             self._space_mode_order = list(DEFAULT_SPACE_MODE_ORDER)
 
+        # max_items is how many matched rows are actually retained in the
+        # model (and therefore reachable, by scrolling, beyond the
+        # num_items visible in the fixed-height window). When scrolling is
+        # disabled this equals num_items, reproducing the old capped
+        # behaviour exactly.
+        self.max_items = self._scroll_max_items if scroll_enabled else self.num_items
+
         # _items is the list of objects to be shown, update sets this
         self._items = []
         self.update()
@@ -346,6 +368,19 @@ class NodeModel(QtCore.QAbstractListModel):
 
     def refresh_items(self, mlist):
         self._all = mlist
+        self.update()
+
+    def set_scroll_enabled(self, enabled):
+        """Adjust the row-retention cap and re-render.
+
+        Called when the scrolling preference changes on an already-warm
+        (preloaded or cached) popup instance, so the new setting takes
+        effect on the next open without requiring a Nuke restart.
+        """
+        new_max_items = self._scroll_max_items if enabled else self.num_items
+        if new_max_items == self.max_items:
+            return
+        self.max_items = new_max_items
         self.update()
 
     def update(self):
@@ -425,16 +460,22 @@ class NodeModel(QtCore.QAbstractListModel):
         sort_b = sorted(scored_b, key=lambda k: (-k['score'], k['text']))
         s = sort_a + sort_b
 
-        # Resolve colour only for the rows that will actually be shown.
-        # Colour plays no part in scoring or sorting, and only the first
-        # num_items rows are ever painted. Computing it for every candidate
-        # meant a nuke.defaultNodeColor() call per matched item — the entire
-        # menu set when the filter is empty, which is exactly the first-
-        # invocation state. Cap first, then colour the survivors so the cost
-        # is O(num_items) per update instead of O(matches).
-        visible = s[:self.num_items]
-        for item in visible:
-            item['color'] = self._color_fn(item['menuobj'])
+        # Cap to max_items — the number of rows retained in the model. With
+        # scrolling disabled this equals num_items (the old capped-to-window
+        # behaviour); with scrolling enabled it's a much larger bound so
+        # matches beyond the visible window are still reachable by
+        # scrolling instead of being discarded outright.
+        #
+        # Colour is deliberately NOT resolved here. It plays no part in
+        # scoring or sorting, and eagerly resolving it for every retained
+        # row would reintroduce the exact per-keystroke cost that was
+        # removed for the first-invocation case (a nuke.defaultNodeColor()
+        # call per matched item) — now potentially against max_items rows
+        # instead of num_items. Instead it's resolved lazily in data(),
+        # which Qt only calls for rows actually painted in the viewport, so
+        # the cost stays bounded by what's on screen regardless of how many
+        # rows are retained for scrolling. See _resolve_color / data().
+        visible = s[:self.max_items]
 
         self._apply_items(visible)
 
@@ -449,7 +490,7 @@ class NodeModel(QtCore.QAbstractListModel):
         run; views querying mid-emission saw inconsistent state.
 
         Diff is keyed on `menupath` (each item's stable identity).
-        new_items is capped at num_items at entry; everything past that
+        new_items is capped at max_items at entry; everything past that
         is dead storage (data()/getorig() never read past rowCount, and
         update() rebuilds from self._all so off-window retention buys
         nothing). rowCount() now returns len(self._items) directly.
@@ -461,11 +502,11 @@ class NodeModel(QtCore.QAbstractListModel):
         morph into current as the timers tick.
         """
         parent = QtCore.QModelIndex()
-        n = self.num_items
-        # Cap both lists at the visible window. self._items may have
-        # been longer under the previous (capped-rowCount) regime; trim
-        # silently before any signal emission so the diff loop's first
-        # begin* call sees a consistent rowCount.
+        n = self.max_items
+        # Cap both lists at the retention window. self._items may have
+        # been longer under a previous cap (e.g. scrolling just got
+        # disabled); trim silently before any signal emission so the diff
+        # loop's first begin* call sees a consistent rowCount.
         if len(self._items) > n:
             del self._items[n:]
         new_items = new_items[:n]
@@ -533,15 +574,54 @@ class NodeModel(QtCore.QAbstractListModel):
         """True if two rows would render identically. Compares only the
         fields the delegate reads — skipping `menuobj` (host handle,
         identity comparison is unreliable) and `menupath` (already
-        matched by caller)."""
+        matched by caller).
+
+        Deliberately does NOT compare 'color': update() no longer resolves
+        colour eagerly, so new_row never carries a 'color' key while
+        old_row may (once lazily resolved by a prior paint) — comparing
+        them would spuriously treat every already-painted stable row as
+        changed on each keystroke. Colour is a function of the row's
+        (stable) menuobj identity, so an unchanged menupath already
+        implies unchanged colour; staleness after a host-side colour edit
+        is handled separately by NodeModel.invalidate_color_cache()."""
         return (
             old_row.get('display_text') == new_row.get('display_text')
             and old_row.get('score') == new_row.get('score')
-            and old_row.get('color') == new_row.get('color')
         )
 
     def rowCount(self, parent=QtCore.QModelIndex()):
         return len(self._items)
+
+    def _resolve_color(self, item):
+        """Lazily resolve and cache an item's colour on first access.
+
+        Colour is intentionally not computed in update() (see the comment
+        there) — Qt only calls data() for rows it is actually about to
+        paint, i.e. the rows currently in the QListView's viewport, so
+        resolving it here keeps the cost bounded to what's on screen no
+        matter how many rows max_items retains for scrolling. The result
+        is cached on the item dict itself; as long as _apply_items keeps
+        reusing the same dict for an unchanged row (its normal fast path),
+        repeated paints and scroll-throughs don't re-resolve it.
+        """
+        if 'color' not in item:
+            item['color'] = self._color_fn(item['menuobj'])
+        return item['color']
+
+    def invalidate_color_cache(self):
+        """Drop cached colour on every currently-retained row so the next
+        paint re-resolves it via self._color_fn.
+
+        Because colour is now resolved lazily and cached on the row dict
+        (see _resolve_color), an unchanged row is never rebuilt by
+        _apply_items and so would keep serving its stale cached colour
+        forever. This complements the plugin-level invalidate_color_cache()
+        — TabTabTabWidget._refresh_fresh calls both, plus a viewport
+        repaint, so a host-side default-node-colour preference edit still
+        surfaces on the open it was made, without forcing a full item
+        re-walk or a full-list colour recompute."""
+        for item in self._items:
+            item.pop('color', None)
 
     def data(self, index, role=Qt.DisplayRole):
         if role == Qt.DisplayRole:
@@ -555,14 +635,14 @@ class NodeModel(QtCore.QAbstractListModel):
             return None
 
         elif role == Qt.BackgroundRole:
-            left_block_color, text_tint_color = self._items[index.row()]['color']
+            left_block_color, text_tint_color = self._resolve_color(self._items[index.row()])
             if text_tint_color is None:
                 return None
             tinted = QtGui.QColor(text_tint_color.red(), text_tint_color.green(), text_tint_color.blue(), 80)  # 31% opacity
             return QtGui.QBrush(tinted)
 
         elif role == Qt.ForegroundRole:
-            _, text_tint_color = self._items[index.row()]['color']
+            _, text_tint_color = self._resolve_color(self._items[index.row()])
             if text_tint_color is None:
                 return None
             luminance = 0.299 * text_tint_color.red() + 0.587 * text_tint_color.green() + 0.114 * text_tint_color.blue()
@@ -572,7 +652,7 @@ class NodeModel(QtCore.QAbstractListModel):
                 return QtGui.QBrush(QtGui.QColor(220, 220, 220))
 
         elif role == Qt.UserRole:
-            left_block_color, _ = self._items[index.row()]['color']
+            left_block_color, _ = self._resolve_color(self._items[index.row()])
             return left_block_color
 
         else:
@@ -691,7 +771,7 @@ class _ItemDelegate(QtWidgets.QStyledItemDelegate):
 
 
 class TabTabTabWidget(QtWidgets.QDialog):
-    def __init__(self, plugin, parent=None, winflags=None, space_mode_order=None):
+    def __init__(self, plugin, parent=None, winflags=None, space_mode_order=None, scroll_enabled=False):
         super(TabTabTabWidget, self).__init__(parent=parent)
         if winflags is not None:
             self.setWindowFlags(winflags)
@@ -708,7 +788,8 @@ class TabTabTabWidget(QtWidgets.QDialog):
         items = plugin.get_items()
 
         # List of stuff, and associated model
-        self.things_model = NodeModel(items, weights=self.weights, icon_fn=plugin.get_icon, color_fn=plugin.get_color, space_mode_order=space_mode_order)
+        self.things_model = NodeModel(items, weights=self.weights, icon_fn=plugin.get_icon, color_fn=plugin.get_color,
+                                       space_mode_order=space_mode_order, scroll_enabled=scroll_enabled)
         self.things = QtWidgets.QListView()
         self.things.setModel(self.things_model)
         self.things.setUniformItemSizes(True)
@@ -718,6 +799,15 @@ class TabTabTabWidget(QtWidgets.QDialog):
         _row_h = _font_h * 2
         self.things.setItemDelegate(_ItemDelegate(_row_h, _row_h, self.things))
         self.things.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Vertical scrolling stays native QListView behaviour (mouse wheel,
+        # scrollbar drag, and — via setCurrentIndex()'s built-in autoScroll —
+        # up/down arrow navigation past the visible window). The window
+        # itself never grows: _resize_list_to_contents fixes self.things'
+        # height to exactly num_items rows regardless of how many rows the
+        # model actually holds (see NodeModel.max_items). ScrollPerPixel
+        # gives smoother wheel scrolling than the default per-item stepping.
+        self.things.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.things.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         self.input.setTextMargins(2, _font_h // 2, 2, _font_h // 2)
 
         # Add input and items to layout
@@ -907,11 +997,22 @@ class TabTabTabWidget(QtWidgets.QDialog):
         NodeModel emits row ops rather than modelReset, so this pass is
         visually quiet when nothing changed: only rows that genuinely
         differ get touched.
+
+        Colour is resolved lazily per row now (see NodeModel._resolve_color),
+        cached on the row's own dict rather than recomputed by update().
+        An unchanged row is retained as the same dict by _apply_items, so
+        it would otherwise keep serving a stale cached colour forever;
+        things_model.invalidate_color_cache() drops that per-row cache
+        alongside the plugin's, and the explicit viewport repaint below
+        forces the currently-visible rows to re-resolve immediately
+        instead of waiting for some unrelated repaint to trigger it.
         """
         if not self.isVisible():
             return
         self.plugin.invalidate_color_cache()
         self.things_model.refresh_items(self.plugin.get_items())
+        self.things_model.invalidate_color_cache()
+        self.things.viewport().update()
         self.move_selection(where="first")
 
     def close(self):
@@ -1067,7 +1168,7 @@ def _try_reparent_preloaded(widget, attempts_remaining):
         )
 
 
-def _create_tabtabtab_widget(plugin, space_mode_order):
+def _create_tabtabtab_widget(plugin, space_mode_order, scroll_enabled=False):
     parent = _find_nuke_main_window()
     # Qt.Dialog keeps the widget a top-level window even with a parent set.
     # Without it, setWindowFlags(FramelessWindowHint) drops the dialog type
@@ -1079,12 +1180,13 @@ def _create_tabtabtab_widget(plugin, space_mode_order):
         parent=parent,
         winflags=Qt.Dialog | Qt.FramelessWindowHint,
         space_mode_order=space_mode_order,
+        scroll_enabled=scroll_enabled,
     )
     widget.destroyed.connect(_clear_tabtabtab_instance)
     return widget
 
 
-def launch(plugin, space_mode_order=None):
+def launch(plugin, space_mode_order=None, scroll_enabled=False):
     global _tabtabtab_instance
 
     if _tabtabtab_instance is not None:
@@ -1116,6 +1218,11 @@ def launch(plugin, space_mode_order=None):
                     and len(space_mode_order) == len(DEFAULT_SPACE_MODE_ORDER)
                     and all(m in VALID_MODES for m in space_mode_order)):
                 _tabtabtab_instance.things_model._space_mode_order = list(space_mode_order)
+            # Re-applied on every launch (like space_mode_order above) so a
+            # scrolling preference change picked up while Nuke is already
+            # running takes effect on the warm/preloaded instance without
+            # requiring a restart.
+            _tabtabtab_instance.things_model.set_scroll_enabled(scroll_enabled)
             _tabtabtab_instance.under_cursor()
             _tabtabtab_instance.show()
             _tabtabtab_instance.raise_()
@@ -1128,13 +1235,13 @@ def launch(plugin, space_mode_order=None):
             # destroyed connection was ever severed or never wired up.
             _tabtabtab_instance = None
 
-    _tabtabtab_instance = _create_tabtabtab_widget(plugin, space_mode_order)
+    _tabtabtab_instance = _create_tabtabtab_widget(plugin, space_mode_order, scroll_enabled=scroll_enabled)
     _tabtabtab_instance.under_cursor()
     _tabtabtab_instance.show()
     _tabtabtab_instance.raise_()
 
 
-def preload(plugin, space_mode_order=None):
+def preload(plugin, space_mode_order=None, scroll_enabled=False):
     """Eagerly construct the popup widget so the first user invocation hits
     the warm reuse path inside launch().
 
@@ -1151,7 +1258,7 @@ def preload(plugin, space_mode_order=None):
     if _tabtabtab_instance is not None:
         return
 
-    _tabtabtab_instance = _create_tabtabtab_widget(plugin, space_mode_order)
+    _tabtabtab_instance = _create_tabtabtab_widget(plugin, space_mode_order, scroll_enabled=scroll_enabled)
 
     # If the main window hadn't appeared yet, _create_tabtabtab_widget left
     # the instance parentless. Schedule background retries so a preload-only
@@ -1165,7 +1272,7 @@ def preload(plugin, space_mode_order=None):
         )
 
 
-def schedule_preload(plugin, space_mode_order=None):
+def schedule_preload(plugin, space_mode_order=None, scroll_enabled=False):
     """Defer preload() to the next event-loop tick.
 
     Use this from the host's plugin entry point. Deferring guarantees
@@ -1174,5 +1281,5 @@ def schedule_preload(plugin, space_mode_order=None):
     """
     QtCore.QTimer.singleShot(
         0,
-        lambda: preload(plugin, space_mode_order=space_mode_order),
+        lambda: preload(plugin, space_mode_order=space_mode_order, scroll_enabled=scroll_enabled),
     )

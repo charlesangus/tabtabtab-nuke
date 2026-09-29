@@ -256,6 +256,7 @@ def registerNukeAction():
             lambda: launch(
                 _plugin,
                 space_mode_order=tabtabtab_prefs.prefs_singleton.get("space_mode_order"),
+                scroll_enabled=tabtabtab_prefs.prefs_singleton.get("scroll_enabled"),
             ),
             "Tab",
         )
@@ -266,9 +267,11 @@ def registerNukeAction():
     # singleShot(0) so Nuke finishes populating its menus first.
     try:
         startup_space_mode_order = tabtabtab_prefs.prefs_singleton.get("space_mode_order")
+        startup_scroll_enabled = tabtabtab_prefs.prefs_singleton.get("scroll_enabled")
     except Exception:
         startup_space_mode_order = None
-    schedule_preload(_plugin, space_mode_order=startup_space_mode_order)
+        startup_scroll_enabled = False
+    schedule_preload(_plugin, space_mode_order=startup_space_mode_order, scroll_enabled=startup_scroll_enabled)
 
 
 def unregisterNukeAction():

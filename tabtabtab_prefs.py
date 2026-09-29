@@ -6,6 +6,11 @@ PREFS_FILE = os.path.join(os.path.expanduser("~"), ".nuke", "tabtabtab_prefs.jso
 DEFAULTS = {
     "tabtabtab_enabled": True,
     "space_mode_order": ["anchored_fuzzy", "non_anchored_fuzzy", "consecutive"],
+    # When True, the results list retains more matches than fit in the
+    # (fixed-size) popup window and lets the user scroll/arrow-key through
+    # them. Colour for the extra rows is resolved lazily, only for rows
+    # actually scrolled into view, so this doesn't add per-keystroke cost.
+    "scroll_enabled": True,
 }
 
 
